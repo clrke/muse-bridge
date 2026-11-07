@@ -10,12 +10,17 @@
  * `seq` restarts at 1 when the bridge restarts. A cursor greater than the current `seq` is
  * therefore from an earlier bridge process, and `since()` replays the whole buffer for it.
  */
-export type FeedEventType = 'run' | 'message' | 'tool' | 'agent_done' | 'done' | 'error' | 'aborted' | 'agent_state';
+export type FeedEventType = 'run' | 'message' | 'tool' | 'agent_done' | 'done' | 'error' | 'aborted' | 'agent_state'
+  | BridgeEventType;
+
+/** Bridge-wide events, not tied to one agent's run: `slug` and `runId` are null. */
+export type BridgeEventType = 'suggestions' | 'agents_changed';
 
 export interface FeedEvent {
   seq: number;
-  slug: string;
-  runId: string;
+  /** null on bridge-wide events (`suggestions`, `agents_changed`). */
+  slug: string | null;
+  runId: string | null;
   type: FeedEventType;
   [key: string]: unknown;
 }
@@ -48,11 +53,20 @@ export class Feed {
 
   /** Append one event, notify subscribers and return it. */
   append(slug: string, runId: string, type: FeedEventType, payload: Record<string, unknown> = {}): FeedEvent {
+    return this.push(slug, runId, type, payload);
+  }
+
+  /** A bridge-wide event (`slug` and `runId` null), e.g. `suggestions` or `agents_changed`. */
+  bridgeEvent(type: BridgeEventType, payload: Record<string, unknown> = {}): FeedEvent {
+    return this.push(null, null, type, payload);
+  }
+
+  private push(slug: string | null, runId: string | null, type: FeedEventType, payload: Record<string, unknown>): FeedEvent {
     const ev: FeedEvent = { seq: ++this.seq, slug, runId, type, ...payload };
     const at = this.now();
     this.buffer.push({ ev, at });
     this.prune(at);
-    if ((type === 'message' || type === 'done') && payload.parentId == null) {
+    if (slug && (type === 'message' || type === 'done') && payload.parentId == null) {
       const speech = payload.speech;
       if (typeof speech === 'string' && speech.trim()) this.lastSpeechBySlug.set(slug, speech);
     }

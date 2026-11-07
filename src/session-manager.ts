@@ -16,6 +16,11 @@ export interface SessionQueryOptions {
   disallowedTools?: string[];
   /** Run with no tools at all (shell, writes and web tools disabled). */
   noTools?: boolean;
+  /**
+   * Read-only turn: no `--yolo` (Muse's approval and sandbox stay on), no workspace rules and
+   * no tools. For bridge-internal prompts that carry everything they need.
+   */
+  readOnly?: boolean;
   /** `muse exec --reasoning-effort` level. */
   effort?: string;
   /** `meta` is passed only for subagent text (`parentId` = the subagent's id). */
@@ -135,6 +140,9 @@ function killTree(pid: number, signal: NodeJS.Signals): number {
   }
   return n;
 }
+
+/** Session key of bridge-internal one-shot turns (not a valid project slug, so it can't clash). */
+export const ONE_SHOT_KEY = '(bridge)';
 
 /** Grace period between the SIGTERM and the SIGKILL escalation in stop(). */
 const STOP_GRACE_MS = 5_000;
@@ -314,14 +322,15 @@ export class SessionManager {
       const promptFile = path.join(os.tmpdir(), `muse-prompt-${randomUUID()}.txt`);
       fs.writeFileSync(promptFile, fullPrompt, { mode: 0o600 });
       const args = [
-        'exec', '--json', '--yolo', '--trust-workspace',
+        'exec', '--json', ...(opts.readOnly ? [] : ['--yolo', '--trust-workspace']),
         '--workspace', opts.cwd, '--session-id', sessionId, '--prompt-file', promptFile,
       ];
       if (opts.effort && MUSE_EFFORTS.has(opts.effort)) args.push('--reasoning-effort', opts.effort);
       const denied = new Set(opts.disallowedTools ?? []);
-      if (opts.noTools || denied.has('Bash')) args.push('--disable-shell');
-      if (opts.noTools || ['Write', 'Edit', 'MultiEdit'].some(t => denied.has(t))) args.push('--disable-write');
-      if (opts.noTools) args.push('--disable-web-tools');
+      const noTools = opts.noTools || opts.readOnly;
+      if (noTools || denied.has('Bash')) args.push('--disable-shell');
+      if (noTools || ['Write', 'Edit', 'MultiEdit'].some(t => denied.has(t))) args.push('--disable-write');
+      if (noTools) args.push('--disable-web-tools');
       this.emitSpawn(slug, args, fresh);
 
       const cleanup = () => { try { fs.unlinkSync(promptFile); } catch { /* already gone */ } };
@@ -428,6 +437,32 @@ export class SessionManager {
         resolve({ text, messages, toolsUsed, sessionId });
       });
     });
+  }
+
+  /**
+   * One read-only Muse turn outside any project (see `readOnly`), in a fresh session and an
+   * empty temporary workspace. Rejects on failure, or after `timeoutMs` (the turn is stopped).
+   */
+  async oneShot(prompt: string, opts: { key?: string; timeoutMs?: number; effort?: string } = {}): Promise<string> {
+    const key = opts.key ?? ONE_SHOT_KEY;
+    const timeoutMs = opts.timeoutMs ?? 90_000;
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'muse-bridge-oneshot-'));
+    this.resetSession(key);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const turn = this.query(key, prompt, { cwd, readOnly: true, effort: opts.effort });
+      turn.catch(() => { /* a timed-out turn rejects later, unobserved */ });
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          this.stop(key);
+          reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`));
+        }, timeoutMs);
+      });
+      return (await Promise.race([turn, timeout])).text;
+    } finally {
+      clearTimeout(timer);
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   }
 
   async waitForIdle(maxMs: number = 60_000, pollMs: number = 200): Promise<boolean> {

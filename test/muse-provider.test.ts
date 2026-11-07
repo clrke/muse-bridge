@@ -202,4 +202,33 @@ describe('Muse provider', () => {
     queue([], 0);
     await expect(sm.query('bots', 'p', { cwd: '/w' })).rejects.toThrow(/empty response/);
   });
+  it('oneShot runs read-only (no --yolo, no tools) in a fresh session and a throwaway workspace', async () => {
+    queue([done('[{"slug":"a"}]')]);
+    queue([done('second')]);
+    expect(await sm.oneShot('rank these', { timeoutMs: 5000 })).toBe('[{"slug":"a"}]');
+    expect(await sm.oneShot('again')).toBe('second');
+    const { args, prompt } = spawned[0];
+    expect(args.slice(0, 2)).toEqual(['exec', '--json']);
+    expect(args).not.toContain('--yolo');
+    expect(args).not.toContain('--trust-workspace');
+    expect(args).toEqual(expect.arrayContaining(['--disable-shell', '--disable-write', '--disable-web-tools']));
+    expect(prompt).toBe('rank these');
+    const ws = args[args.indexOf('--workspace') + 1];
+    expect(ws).toContain('muse-bridge-oneshot-');
+    expect(fs.existsSync(ws)).toBe(false);
+    const ids = spawned.map(s => s.args[s.args.indexOf('--session-id') + 1]);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it('oneShot rejects on timeout and stops the turn', async () => {
+    const proc = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), kill: vi.fn(),
+      pid: undefined, exitCode: null, signalCode: null,
+    });
+    vi.mocked(spawn).mockImplementationOnce((() => proc) as any);
+    const stop = vi.spyOn(sm, 'stop');
+    await expect(sm.oneShot('slow', { timeoutMs: 30 })).rejects.toThrow(/timed out/);
+    expect(stop).toHaveBeenCalledWith('(bridge)');
+    proc.emit('close', 0, 'SIGTERM');
+  });
 });

@@ -491,6 +491,9 @@ export class CommandRouter {
    *  the wrap-up digest must stand down rather than overwrite their decision. */
   private guardTripped = new Set<string>();
 
+  /** Called after a project is registered (the server turns it into a feed `agents_changed`). */
+  onAgentsChanged?: () => void;
+
   constructor(
     private sessionManager: SessionManager,
     private projectStore: ProjectStore,
@@ -589,16 +592,30 @@ export class CommandRouter {
     if (!m) return { response: usage };
     const slug = m[1].toLowerCase();
     const directory = m[2] ?? m[3];
-    const title = m[4].trim() || slug;
-    if (!SLUG_RE.test(slug)) return { response: `Invalid slug "${slug}": use lowercase letters, digits and dashes.` };
-    if ((GLOBAL_COMMANDS as readonly string[]).includes(slug)) return { response: `"${slug}" is a bridge command and can't be a project slug.` };
-    if (!path.isAbsolute(directory)) return { response: `Directory must be an absolute path. ${usage}` };
-    const stat = await fs.stat(directory).catch(() => null);
-    if (!stat?.isDirectory()) return { response: `Directory not found: ${directory}` };
-    if (await this.projectStore.load(slug)) return { response: `Project /${slug} already exists.` };
-
-    const project = await this.projectStore.create({ title, slug, description: '', directory, autoDecide: false });
+    const r = await this.registerProject(slug, directory, m[4].trim() || slug);
+    if (!r.ok) return { response: r.code === 'directory' && !path.isAbsolute(directory) ? `${r.error} ${usage}` : r.error };
+    const { project } = r;
     return { response: `Project registered!\nTitle: ${project.title}\nCommand: /${project.slug}\nDirectory: ${project.directory}`, projectSlug: slug };
+  }
+
+  /**
+   * Register a project (the `/register` code path, also used to accept a suggestion).
+   * `code` on failure: `slug` (invalid or reserved), `directory` (not an absolute existing
+   * directory) or `exists` (the slug is taken).
+   */
+  async registerProject(slug: string, directory: string, title?: string): Promise<
+    { ok: true; project: ProjectConfig } | { ok: false; code: 'slug' | 'directory' | 'exists'; error: string }
+  > {
+    if (!SLUG_RE.test(slug)) return { ok: false, code: 'slug', error: `Invalid slug "${slug}": use lowercase letters, digits and dashes.` };
+    if ((GLOBAL_COMMANDS as readonly string[]).includes(slug)) return { ok: false, code: 'slug', error: `"${slug}" is a bridge command and can't be a project slug.` };
+    if (!path.isAbsolute(directory)) return { ok: false, code: 'directory', error: 'Directory must be an absolute path.' };
+    const stat = await fs.stat(directory).catch(() => null);
+    if (!stat?.isDirectory()) return { ok: false, code: 'directory', error: `Directory not found: ${directory}` };
+    if (await this.projectStore.load(slug)) return { ok: false, code: 'exists', error: `Project /${slug} already exists.` };
+
+    const project = await this.projectStore.create({ title: title?.trim() || slug, slug, description: '', directory, autoDecide: false });
+    try { this.onAgentsChanged?.(); } catch { /* a listener must not fail the registration */ }
+    return { ok: true, project };
   }
 
   private async handleVacation(): Promise<HandleResult> {
