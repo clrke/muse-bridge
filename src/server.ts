@@ -8,6 +8,8 @@ import { ProjectStore } from './project-store.js';
 import { CommandRouter } from './command-router.js';
 import { startCronJobs } from './cron.js';
 import { persistMuseUsage, pollMuseAllowance } from './muse-usage.js';
+import { Feed } from './feed.js';
+import { RunJournal } from './run-journal.js';
 
 export interface RunningBridge {
   servers: Server[];
@@ -55,9 +57,13 @@ export async function startServer(config: Config): Promise<RunningBridge> {
     console.log(`[Bridge] broadcast ${slug ?? 'global'} -> ${sseClients.size} client(s) (${text.length} chars)`);
   };
 
-  const app = createApp({ commandRouter, projectStore, sessionManager, config, sseClients, broadcast });
+  // One feed and one run journal shared by the HTTP routes and the cron, so GET /feed and
+  // GET /runs/:id/events see every run.
+  const feed = new Feed();
+  const runJournal = new RunJournal();
+  const app = createApp({ commandRouter, projectStore, sessionManager, config, sseClients, broadcast, feed, runJournal });
   const stopCron = config.cron
-    ? startCronJobs({ commandRouter, projectStore, config, broadcast })
+    ? startCronJobs({ commandRouter, projectStore, config, broadcast, feed, runJournal })
     : () => {};
 
   const servers = await Promise.all(config.hosts.map((host, i) => new Promise<Server | null>((resolve, reject) => {

@@ -62,6 +62,8 @@ export interface ProjectConfig {
     rating: number;
     deadline: string;
     pausedRemaining: number | null;
+    /** When the agent asked (ISO). Missing in files written before it existed. */
+    at?: string;
   } | null;
   /** Let the hourly cron answer this project's pending decision once its deadline passes. */
   autoDecide: boolean;
@@ -69,6 +71,10 @@ export interface ProjectConfig {
   lastConversationAt?: string;
   /** Last time a client (not the cron) messaged this project. */
   lastUserMessageAt?: string;
+  /** Optional display hints for VR clients (GET /agents): an avatar id or URL, a color (e.g. `#4caf50`), a TTS voice name. */
+  avatar?: string;
+  color?: string;
+  voice?: string;
 }
 
 export interface ProjectResponse {

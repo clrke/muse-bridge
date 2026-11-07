@@ -3,13 +3,15 @@ import express from 'express';
 import cors from 'cors';
 import type { AskPayload, AskResponse, HealthResponse, NotifyPayload } from './types.js';
 import type { CommandRouter } from './command-router.js';
-import { GLOBAL_COMMANDS, stripJsonParts, formatForChat } from './command-router.js';
+import { GLOBAL_COMMANDS } from './command-router.js';
 import type { ProjectStore } from './project-store.js';
 import type { Config } from './config.js';
 import { getMuseUsage } from './muse-usage.js';
-import type { MessageMeta, SessionManager, ToolUseMeta } from './session-manager.js';
+import type { SessionManager } from './session-manager.js';
 import { debug } from './debug.js';
 import { RunJournal, type JournalEvent } from './run-journal.js';
+import { Feed, type FeedEvent } from './feed.js';
+import { createRun, type RunReporter, type RunSource } from './run-reporter.js';
 
 /** One SSE frame with its journal sequence as the event id. */
 function sseFrame(ev: JournalEvent): string {
@@ -31,7 +33,33 @@ export interface AppDeps {
   runJournal?: RunJournal;
   /** SSE keep-alive interval (ms). Default 30s; tests shrink it. */
   streamHeartbeatMs?: number;
+  /** The global all-agents feed behind GET /feed. Default: a fresh in-memory one. */
+  feed?: Feed;
+  /** GET /feed keep-alive (`: ping`) interval (ms). Default 15s. */
+  feedPingMs?: number;
 }
+
+/** Wire shape of one agent in GET /agents. */
+export interface AgentInfo {
+  slug: string;
+  title: string;
+  busy: boolean;
+  runId: string | null;
+  lastRunAt: string | null;
+  decision: { text: string; rating: number; at: string } | null;
+  lastSpeech: string | null;
+  avatar: string | null;
+  color: string | null;
+  voice: string | null;
+}
+
+const PROJECT_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+const optString = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
+const iso = (v: unknown): string | null => {
+  if (typeof v !== 'string' && typeof v !== 'number' && !(v instanceof Date)) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
 
 const SLUG_RE = /^\/([a-z0-9-]+)/i;
 
@@ -49,7 +77,10 @@ function tokenMatches(header: string, token: string): boolean {
 const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' };
 
 export function createApp(deps: AppDeps): express.Express {
-  const { commandRouter, projectStore, sseClients, broadcast, sessionManager, config, streamHeartbeatMs = 30_000, runJournal = new RunJournal() } = deps;
+  const {
+    commandRouter, projectStore, sseClients, broadcast, sessionManager, config,
+    streamHeartbeatMs = 30_000, runJournal = new RunJournal(), feed = new Feed(), feedPingMs = 15_000,
+  } = deps;
   const app = express();
   const allowedOrigins = new Set(config.allowedOrigins);
   const isAllowedOrigin = (origin: string) => allowedOrigins.has(origin);
@@ -88,6 +119,23 @@ export function createApp(deps: AppDeps): express.Express {
     requestTimestamps.push(now);
     return true;
   }
+
+  /**
+   * The registered project a command line drives (`/<slug> …`, or `/nudge <slug>`), or null for
+   * bridge commands and unknown slugs. Only project runs go on the feed.
+   */
+  async function projectSlugOf(message: string): Promise<string | null> {
+    const m = message.trim().match(/^\/([a-z0-9-]+)\s*(\S*)/i);
+    if (!m) return null;
+    const cmd = m[1].toLowerCase();
+    const slug = cmd === 'nudge' ? m[2].toLowerCase() : (GLOBAL_COMMANDS as readonly string[]).includes(cmd) ? '' : cmd;
+    if (!slug || !PROJECT_SLUG_RE.test(slug)) return null;
+    return (await projectStore.load(slug)) ? slug : null;
+  }
+
+  /** A reporter for one run. Runs of a registered project also go on the feed; all are journaled for /runs/:id/events. */
+  const newRun = (slug: string | null, source: RunSource, write?: (ev: JournalEvent) => void): RunReporter =>
+    createRun({ slug, source, feed, journal: runJournal, write });
 
   /** Validate an /ask body. Returns the payload, or null after sending a 400. */
   function readPayload(req: express.Request, res: express.Response): AskPayload | null {
@@ -217,16 +265,22 @@ export function createApp(deps: AppDeps): express.Express {
     debug('ask', `slug=${slug ?? 'none'} sender=${payload.trigger.sender} chars=${payload.trigger.originalMessage.length}`);
 
     const start = Date.now();
+    // A project turn goes on the feed like any other run; bridge commands (/list, …) don't.
+    const projectSlug = await projectSlugOf(payload.trigger.originalMessage);
+    const run = projectSlug ? newRun(projectSlug, 'ask') : null;
+    run?.start();
     try {
-      const { response } = await commandRouter.handle(payload);
+      const { response, parked } = await commandRouter.handle(payload, run?.onMessage, run?.onToolUse, run?.onFinalPrompt);
       const elapsed = Date.now() - start;
       stats.requestsServed++;
       stats.totalMs += elapsed;
+      run?.finish(response, { parked });
       const resp: AskResponse = { response, timestamp: new Date().toISOString() };
       res.json(resp);
     } catch (err) {
       const error = err as Error;
       stats.lastError = error.message;
+      run?.fail(error);
       process.stderr.write(`[Bridge] Error slug=${slug ?? 'none'} after ${Date.now() - start}ms: ${error.stack || error.message}\n`);
       res.status(500).json({ error: 'Technical issue. Please try again later.' });
     }
@@ -248,81 +302,161 @@ export function createApp(deps: AppDeps): express.Express {
 
     // Keep clients' body timeouts from firing during a long silent stretch (one slow tool call).
     const streamHeartbeat = setInterval(() => res.write(': heartbeat\n\n'), streamHeartbeatMs);
+    // `res`, not `req`: once express.json() has consumed the body, `req` emits 'close' at once.
+    res.on('close', () => clearInterval(streamHeartbeat));
 
     // Every event is journaled under a run id (first event) with an SSE `id:` sequence, so a
     // client that loses this connection can resume via GET /runs/:id/events?after=<seq>.
     // Writes to a closed response are skipped; the run itself keeps going regardless.
-    const runId = runJournal.create(triggerSlug);
-    const emit = (data: Record<string, unknown>) => {
-      const ev = runJournal.append(runId, data);
-      if (ev && !res.writableEnded && !res.destroyed) res.write(sseFrame(ev));
-    };
-    emit({ type: 'run', runId });
-    // `res`, not `req`: once express.json() has consumed the body, `req` emits 'close' at once.
-    res.on('close', () => clearInterval(streamHeartbeat));
-
+    // Project runs also go on the global feed (GET /feed) under the same run id.
+    let run: RunReporter | undefined;
     let unsubscribeSpawn: (() => void) | undefined;
     try {
+      const projectSlug = await projectSlugOf(trigger.originalMessage);
+      run = newRun(projectSlug, 'ask/stream', (ev) => {
+        if (!res.writableEnded && !res.destroyed) res.write(sseFrame(ev));
+      });
+      run.start();
+      const r = run;
       if (triggerSlug) {
         // The exact `muse` flags of every spawn for this project while the stream is open.
-        unsubscribeSpawn = sessionManager.onSpawn(triggerSlug, (line) => emit({ type: 'cli_params', text: line }));
+        unsubscribeSpawn = sessionManager.onSpawn(triggerSlug, (line) => r.emit({ type: 'cli_params', text: line }));
         const proj = await projectStore.load(triggerSlug);
-        if (proj?.directory) emit({ type: 'meta', projectDirectory: proj.directory });
+        if (proj?.directory) r.emit({ type: 'meta', projectDirectory: proj.directory });
       }
 
-      const sentParts = new Set<string>();
-      let mainPartsSent = 0; // main-session parts only
-      const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
-      const { response, projectSlug, parked } = await commandRouter.handle(
-        payload,
-        (text, meta?: MessageMeta) => {
-          const parentId = meta?.parentId ?? null;
-          for (const part of stripJsonParts(text)) {
-            const formatted = formatForChat(part.trim());
-            // Dedup per speaker: a subagent repeating the main session's text still posts.
-            const key = normalize(formatted) && `${parentId ?? ''}|${normalize(formatted)}`;
-            if (key && !sentParts.has(key)) {
-              sentParts.add(key);
-              if (!parentId) mainPartsSent++;
-              emit(parentId ? { type: 'message', text: formatted, parentId } : { type: 'message', text: formatted });
-            }
-          }
-        },
-        (tool, detail, meta?: ToolUseMeta) => emit(
-          meta?.done
-            ? { type: 'agent_done', id: meta.id, status: meta.status ?? 'completed' }
-            : { type: 'tool', name: tool, detail, id: meta?.id, parentId: meta?.parentId ?? null },
-        ),
-        // The assembled prompt, so a client can show what the agent actually receives.
-        (text) => emit({ type: 'final_prompt', text }),
-      );
+      const { response, projectSlug: handledSlug, parked } = await commandRouter.handle(payload, r.onMessage, r.onToolUse, r.onFinalPrompt);
 
-      // `singleShot`: nothing was streamed as `message` (e.g. a command reply), so the
-      // client should show `response`.
-      const singleShot = mainPartsSent === 0;
       let projectDirectory: string | null = null;
-      if (projectSlug) {
-        const proj = await projectStore.load(projectSlug);
+      if (handledSlug) {
+        const proj = await projectStore.load(handledSlug);
         if (proj?.directory) projectDirectory = proj.directory;
       }
       stats.requestsServed++;
-      emit({ type: 'done', response: formatForChat(response), singleShot, projectDirectory, parked: parked === true });
+      r.finish(response, { projectDirectory, parked });
       res.end();
     } catch (err) {
       const msg = (err as Error).message;
       stats.lastError = msg;
-      if (msg.includes('aborted')) {
-        console.log(`[Bridge] Stream aborted: ${msg}`);
-        emit({ type: 'aborted' });
-      } else {
-        console.error(`[Bridge] Stream error: ${msg}`);
-        emit({ type: 'error', error: msg });
-      }
+      if (msg.includes('aborted')) console.log(`[Bridge] Stream aborted: ${msg}`);
+      else console.error(`[Bridge] Stream error: ${msg}`);
+      if (run) run.fail(err);
+      else if (!res.writableEnded) res.write(`data: ${JSON.stringify({ type: 'error', error: msg })}\n\n`);
       res.end();
     } finally {
       unsubscribeSpawn?.();
       clearInterval(streamHeartbeat);
     }
+  });
+
+  // Every project's state in one call, for the VR agent list.
+  app.get('/agents', async (_req, res) => {
+    const projects = (await projectStore.loadAll())
+      .filter(p => p && typeof p.slug === 'string')
+      .sort((a, b) => a.slug.localeCompare(b.slug));
+    const agents: AgentInfo[] = projects.map((p) => {
+      const lastRun = feed.lastRunAt(p.slug);
+      const d = p.decision;
+      return {
+        slug: p.slug,
+        title: optString(p.title) ?? p.slug,
+        busy: feed.isBusy(p.slug) || sessionManager.isRunning(p.slug),
+        runId: feed.currentRunId(p.slug),
+        lastRunAt: lastRun != null ? new Date(lastRun).toISOString() : iso(p.lastConversationAt),
+        // Only a stored decision is pending: rating 0 auto-continues and is never stored, and
+        // the next message to the project clears it.
+        decision: d && typeof d.summary === 'string' && typeof d.rating === 'number' && d.rating >= 1
+          ? { text: d.summary, rating: d.rating, at: iso(d.at) ?? iso(p.lastConversationAt) ?? iso(p.createdAt) ?? new Date(0).toISOString() }
+          : null,
+        lastSpeech: feed.lastSpeech(p.slug),
+        avatar: optString(p.avatar),
+        color: optString(p.color),
+        voice: optString(p.voice),
+      };
+    });
+    res.json({ agents });
+  });
+
+  // Send a turn without holding a connection: 202 at once, the run's events arrive on /feed.
+  app.post('/agents/:slug/ask', async (req, res) => {
+    const slug = String(req.params.slug ?? '').toLowerCase();
+    if (!PROJECT_SLUG_RE.test(slug) || !(await projectStore.load(slug))) {
+      res.status(404).json({ error: `Unknown agent: ${slug}` });
+      return;
+    }
+    const { text, sender } = (req.body ?? {}) as { text?: unknown; sender?: unknown };
+    if (typeof text !== 'string' || !text.trim()) {
+      res.status(400).json({ error: 'Missing or invalid "text"' });
+      return;
+    }
+    if (sender !== undefined && sender !== null && typeof sender !== 'string') {
+      res.status(400).json({ error: 'Invalid "sender"' });
+      return;
+    }
+    if (!checkRpm()) {
+      res.status(429).json({ error: 'Rate limited. Try again in a minute.' });
+      return;
+    }
+    const payload: AskPayload = {
+      trigger: { type: 'inline', query: null, sender: sender || config.senderName, replyTo: null, originalMessage: `/${slug} ${text.trim()}` },
+      recentMessages: [],
+      repliedToMessage: null,
+    };
+    // Busy: the turn queues behind the running one (or parks, for "For later:"), as on /ask.
+    const queued = feed.isBusy(slug) || sessionManager.isRunning(slug);
+    const run = newRun(slug, 'agents');
+    run.start();
+    console.log(`[Bridge] /agents/${slug}/ask <- ${text.length} chars from ${payload.trigger.sender}${queued ? ' (queued)' : ''} run=${run.runId}`);
+    res.status(202).json(queued ? { runId: run.runId, queued: true } : { runId: run.runId });
+
+    const start = Date.now();
+    try {
+      const { response, parked } = await commandRouter.handle(payload, run.onMessage, run.onToolUse, run.onFinalPrompt);
+      stats.requestsServed++;
+      stats.totalMs += Date.now() - start;
+      run.finish(response, { parked });
+    } catch (err) {
+      stats.lastError = (err as Error).message;
+      console.error(`[Bridge] /agents/${slug}/ask run ${run.runId} failed: ${(err as Error).message}`);
+      run.fail(err);
+    }
+  });
+
+  // Same as POST /stop, with the slug in the path.
+  app.post('/agents/:slug/stop', (req, res) => {
+    const slug = String(req.params.slug ?? '').toLowerCase();
+    const result = sessionManager.stop(slug);
+    console.log(`[Bridge] /agents/${slug}/stop: ${result.reason}`);
+    res.json({ status: 'ok', ...result });
+  });
+
+  // One SSE stream for every agent's runs. Resume with ?after=<seq> or Last-Event-ID.
+  app.get('/feed', (req, res) => {
+    const rawCursor = typeof req.query.after === 'string' ? req.query.after : req.headers['last-event-id'];
+    const cursor = Number(Array.isArray(rawCursor) ? rawCursor[0] : rawCursor);
+    const hasCursor = rawCursor !== undefined && rawCursor !== '' && Number.isFinite(cursor);
+    const clientKind = typeof req.query.client === 'string' ? req.query.client : 'unknown';
+    res.writeHead(200, { ...SSE_HEADERS, 'X-Accel-Buffering': 'no' });
+    res.socket?.setNoDelay(true);
+    res.write(': ping\n\n');
+    const frame = (ev: FeedEvent) => `id: ${ev.seq}\ndata: ${JSON.stringify(ev)}\n\n`;
+    let last = 0;
+    const send = (ev: FeedEvent) => {
+      if (ev.seq <= last || res.writableEnded || res.destroyed) return;
+      last = ev.seq;
+      res.write(frame(ev));
+    };
+    // Replay and subscribe in the same tick: nothing can be appended in between.
+    if (hasCursor) for (const ev of feed.since(Math.max(0, cursor))) send(ev);
+    last = Math.max(last, feed.lastSeq);
+    const unsubscribe = feed.subscribe(send);
+    const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, feedPingMs);
+    console.log(`[Bridge] /feed connected: kind=${clientKind}${hasCursor ? ` after=${cursor}` : ''} (total ${feed.subscriberCount})`);
+    res.on('close', () => {
+      clearInterval(ping);
+      unsubscribe();
+      console.log(`[Bridge] /feed disconnected: kind=${clientKind} (total ${feed.subscriberCount})`);
+    });
   });
 
   // Resume a dropped /ask/stream run: replay events after `after`, then stream the rest live.

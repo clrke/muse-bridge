@@ -2,6 +2,9 @@ import type { ProjectStore } from './project-store.js';
 import type { CommandRouter } from './command-router.js';
 import type { Config } from './config.js';
 import { hasDeadlinePassed, isActiveHour } from './deadline.js';
+import type { Feed } from './feed.js';
+import { RunJournal } from './run-journal.js';
+import { createRun } from './run-reporter.js';
 
 /**
  * Cron-driven turns have no per-subagent stream, so subagent text is dropped rather than
@@ -17,6 +20,10 @@ export interface CronDeps {
   config: Pick<Config, 'autoDecideTimeoutMs'>;
   /** Pushes a message to every /events subscriber. */
   broadcast: (text: string, slug?: string, projectDirectory?: string) => void;
+  /** The global feed (GET /feed): each auto-decide turn is reported there as a run. */
+  feed?: Feed;
+  /** Journal for GET /runs/:id/events (share the app's so cron runs can be resumed too). */
+  runJournal?: RunJournal;
 }
 
 /**
@@ -50,6 +57,12 @@ export async function runAutoDecidePass(deps: CronDeps, now = new Date()): Promi
 
     console.log(`[Cron] Auto-deciding for ${project.slug}...`);
     const send = (text: string) => broadcast(text, project.slug, project.directory);
+    const run = deps.feed
+      ? createRun({ slug: project.slug, source: 'cron', feed: deps.feed, journal: deps.runJournal ?? (deps.runJournal = new RunJournal()) })
+      : null;
+    run?.start();
+    const mainOnly = mainSessionOnly(send);
+    const onMessage = (text: string, meta?: { parentId: string }) => { mainOnly(text, meta); run?.onMessage(text, meta); };
     try {
       let timer: ReturnType<typeof setTimeout>;
       const timeoutMs = config.autoDecideTimeoutMs;
@@ -57,12 +70,14 @@ export async function runAutoDecidePass(deps: CronDeps, now = new Date()): Promi
         timer = setTimeout(() => reject(new Error(`auto-decide timed out after ${Math.round(timeoutMs / 60_000)} minutes`)), timeoutMs);
       });
       const response = await Promise.race([
-        commandRouter.autoDecide(project, mainSessionOnly(send)).finally(() => clearTimeout(timer!)),
+        commandRouter.autoDecide(project, onMessage, run?.onToolUse, run?.onFinalPrompt).finally(() => clearTimeout(timer!)),
         timeout,
       ]);
       send(response);
+      run?.finish(response, { projectDirectory: project.directory });
     } catch (err) {
       console.error(`[Cron] Auto-decide failed for ${project.slug}: ${(err as Error).message}`);
+      run?.fail(err);
       // Promise.race doesn't cancel the loser: if the timeout won, the turn is still running
       // and holding this slug's queue. Force-stop it so the slug is really free again.
       if (/timed out after/.test((err as Error).message)) {

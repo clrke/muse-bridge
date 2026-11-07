@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mainSessionOnly, startCronJobs } from '../src/cron.js';
+import { mainSessionOnly, runAutoDecidePass, startCronJobs } from '../src/cron.js';
 import type { CronDeps } from '../src/cron.js';
+import { Feed } from '../src/feed.js';
 import type { ProjectStore } from '../src/project-store.js';
 import type { CommandRouter } from '../src/command-router.js';
 import type { ProjectConfig } from '../src/types.js';
@@ -68,8 +69,36 @@ describe('auto-decide interval', () => {
     startCronJobs(deps);
     await vi.advanceTimersByTimeAsync(60 * 60 * 1000); // Fire hourly interval
 
-    expect(deps.commandRouter.autoDecide).toHaveBeenCalledWith(project, expect.any(Function));
+    expect(vi.mocked(deps.commandRouter.autoDecide).mock.calls[0].slice(0, 2)).toEqual([project, expect.any(Function)]);
     expect(deps.broadcast).toHaveBeenCalledWith('auto-decided', 'test', '/tmp');
+  });
+
+  it('reports each auto-decide turn on the feed as a cron run', async () => {
+    vi.setSystemTime(new Date('2026-04-07T10:00:00'));
+    const project = makeProject({
+      decision: { summary: 'pick DB', rating: 5, deadline: new Date('2026-04-07T09:00:00').toISOString(), pausedRemaining: null },
+    });
+    const feed = new Feed();
+    const autoDecide = vi.fn(async (_p: unknown, onMessage?: (t: string, m?: { parentId: string }) => void, onToolUse?: (n: string, d: string, m?: object) => void) => {
+      onToolUse?.('Bash', 'ls', { parentId: null });
+      onMessage?.('sub says', { parentId: 'sa-1' });
+      onMessage?.('{"tldr":"Picked **Postgres**.","decision":"Migrate now?","rating":4}');
+      return 'auto-decided';
+    });
+    const deps = makeDeps({
+      commandRouter: { autoDecide, isBusy: vi.fn().mockReturnValue(false), stopSlug: vi.fn() } as unknown as CommandRouter,
+      projectStore: { loadAll: vi.fn().mockResolvedValue([project]), load: vi.fn(), isVacation: vi.fn().mockResolvedValue(false) } as unknown as ProjectStore,
+      feed,
+    });
+    await runAutoDecidePass(deps);
+    const evs = feed.since(0);
+    expect(evs.map(e => e.type)).toEqual(['run', 'agent_state', 'tool', 'message', 'message', 'done', 'agent_state']);
+    expect(evs[0]).toMatchObject({ slug: 'test', type: 'run', source: 'cron' });
+    expect(new Set(evs.map(e => e.runId)).size).toBe(1);
+    expect(evs.find(e => e.type === 'done')).toMatchObject({ speech: 'Picked Postgres.', decision: 'Migrate now?', rating: 4 });
+    expect(evs[evs.length - 1]).toMatchObject({ type: 'agent_state', busy: false });
+    // /events still gets only the main session's text
+    expect(vi.mocked(deps.broadcast).mock.calls.map(c => c[0])).not.toContain('sub says');
   });
 
   it('skips auto-decide outside active hours', async () => {

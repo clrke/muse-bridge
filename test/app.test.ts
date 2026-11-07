@@ -257,8 +257,8 @@ describe('POST /ask/stream', () => {
 
     const events = parseSSE(res.text);
     expect(events.filter(e => e.type === 'message')).toEqual([
-      { type: 'message', text: 'same words', parentId: 'toolu_A' },
-      { type: 'message', text: 'same words', parentId: 'toolu_B' },
+      { type: 'message', text: 'same words', speech: 'same words', parentId: 'toolu_A' },
+      { type: 'message', text: 'same words', speech: 'same words', parentId: 'toolu_B' },
     ]);
     // Only subagent text streamed → the main reply wasn't, so the client must render `response`.
     expect(events.find(e => e.type === 'done')).toMatchObject({ response: 'final answer', singleShot: true });

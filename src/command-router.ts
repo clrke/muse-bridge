@@ -814,7 +814,7 @@ export class CommandRouter {
 
       const deadline = calculateDeadline(10);
       project.status = `Awaiting decision regarding ${summary}. Wrapped up after ${roundTrips} round-trips at ${formatTimestamp()}.`;
-      project.decision = { summary, rating: 10, deadline: deadline.toISOString(), pausedRemaining: null };
+      project.decision = { summary, rating: 10, deadline: deadline.toISOString(), pausedRemaining: null, at: new Date().toISOString() };
       project.lastConversationAt = new Date().toISOString();
       await this.projectStore.save(project);
 
@@ -983,7 +983,7 @@ export class CommandRouter {
               const nextDeadline = calculateDeadline(nextDecision.rating);
               const dl = formatTimestamp(nextDeadline);
               project.status = `Awaiting decision regarding ${nextDecision.summary}.${nextDecision.rating >= 10 ? '' : ` Auto-decides at ${dl}.`}`;
-              project.decision = { summary: nextDecision.summary, rating: nextDecision.rating, deadline: nextDeadline.toISOString(), pausedRemaining: null };
+              project.decision = { summary: nextDecision.summary, rating: nextDecision.rating, deadline: nextDeadline.toISOString(), pausedRemaining: null, at: new Date().toISOString() };
               await this.projectStore.save(project);
               const autoDecideText = nextDecision.rating >= 10 ? '' : `, auto-decides at ${dl}`;
               const innerNotice = `⏳ **Decision needed (rating ${nextDecision.rating}):** ${safeBacktickWrap(nextDecision.summary)}${autoDecideText}`;
@@ -1002,7 +1002,7 @@ export class CommandRouter {
               const stallDeadline = calculateDeadline(1);
               const dl = formatTimestamp(stallDeadline);
               project.status = `Stalled on "${nextDecision.summary}". Auto-decides at ${dl}.`;
-              project.decision = { summary: nextDecision.summary, rating: 1, deadline: stallDeadline.toISOString(), pausedRemaining: null };
+              project.decision = { summary: nextDecision.summary, rating: 1, deadline: stallDeadline.toISOString(), pausedRemaining: null, at: new Date().toISOString() };
               await this.projectStore.save(project);
               break;
             }
@@ -1029,7 +1029,7 @@ export class CommandRouter {
       const deadline = calculateDeadline(rating);
       const dl = formatTimestamp(deadline);
       project.status = `Awaiting decision regarding ${summary}.${rating >= 10 ? '' : ` Auto-decides at ${dl}.`}`;
-      project.decision = { summary, rating, deadline: deadline.toISOString(), pausedRemaining: null };
+      project.decision = { summary, rating, deadline: deadline.toISOString(), pausedRemaining: null, at: new Date().toISOString() };
       await this.projectStore.save(project);
       const autoDecideText = rating >= 10 ? '' : `, auto-decides at ${dl}`;
       const decisionNotice = `⏳ **Decision needed (rating ${rating}):** ${safeBacktickWrap(summary)}${autoDecideText}`;
