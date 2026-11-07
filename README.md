@@ -13,8 +13,10 @@ a stable `--session-id` per project, so the conversation continues across turns 
 restarts.
 
 > **Security first.** Agents run with every action pre-approved (`muse exec --yolo`). Anything
-> that can reach the bridge can run shell commands as you. The bridge listens on loopback only by
-> default. Read [Security](#security) before changing that.
+> that can reach the bridge can run shell commands as you. By default the bridge listens on
+> loopback and, for [pairing](#pairing-a-headset-lan--qr-code) a headset, on your private LAN
+> addresses, where every request needs the pairing token. `--no-pair` keeps it on loopback only.
+> Read [Security](#security).
 
 ## Install
 
@@ -32,8 +34,13 @@ restarts.
 
    From a checkout: `npm install && npm run build && npm start`, or `npm run dev` (tsx, no build).
 
-3. Register a project, either with any client (`/register my-app /abs/path/to/my-app My App`) or
-   with curl:
+   On start it prints a QR code to pair a headset over Wi-Fi
+   ([Pairing](#pairing-a-headset-lan--qr-code)) and, shortly after, your most recently edited
+   projects as suggestions ([Project suggestions](#project-suggestions)).
+
+3. Accept a suggestion (from the headset, or
+   `curl -X POST localhost:3141/suggestions/<slug>/accept`), or register a project, either with
+   any client (`/register my-app /abs/path/to/my-app My App`) or with curl:
 
    ```sh
    curl -s localhost:3141/ask -H 'Content-Type: application/json' \
@@ -48,9 +55,13 @@ Environment variables, overridden by command-line flags (`muse-bridge --help`):
 |---|---|---|---|
 | `PORT` | `-p, --port` | `3141` | Port |
 | `BRIDGE_HOSTS` | `-H, --host` (repeatable) | `127.0.0.1,::1` | Interfaces to listen on. A non-loopback host is refused unless `BRIDGE_TOKEN` is set |
-| `BRIDGE_TOKEN` | (env only) | unset | If set, every route except `/health` needs `Authorization: Bearer <token>` |
+| `BRIDGE_TOKEN` | (env only) | unset | If set, every route except `/health` needs `Authorization: Bearer <token>`, from loopback too. With pairing on, it is also the pairing token |
+| `MUSE_BRIDGE_PAIR` | `--no-pair` | on | [Pairing](#pairing-a-headset-lan--qr-code): also listen on private LAN addresses (pairing token required there) and show a QR code. `0` = loopback only |
+| (flag only) | `--reset-pairing` | | Rotate the pairing token, unpairing every device |
+| `MUSE_BRIDGE_DISCOVER` | `--no-discover` | on | [Project suggestions](#project-suggestions) at startup. `0` disables them |
+| `MUSE_BRIDGE_SCAN_ROOTS` | `--scan-root` (repeatable) | see below | Folders to scan for projects (comma- or colon-separated) |
 | `MUSE_PATH` | `--muse-path` | `~/.local/bin/muse`, else `muse` | The Muse Code executable |
-| `MUSE_BRIDGE_HOME` | `--home` | `~/.muse-bridge` | State directory (usage snapshot) |
+| `MUSE_BRIDGE_HOME` | `--home` | `~/.muse-bridge` | State directory (usage snapshot, `pairing.json`) |
 | `MUSE_BRIDGE_PROJECTS_DIR` | `--projects-dir` | `~/.muse-bridge/projects` | One `<slug>.md` file per project |
 | `MUSE_BRIDGE_SENDER` | `--sender` | `user` | Sender name used when a request has no `trigger.sender` |
 | `MUSE_BRIDGE_CRON` | `--no-cron` | on | Hourly auto-decide job (see below). `0` disables it |
@@ -88,6 +99,120 @@ voice: en-US-Neural2-F             # a text-to-speech voice name
 
 Registering also adds `.muse-bridge/` to the project's `.gitignore`. The agent is asked to keep
 decision notes in `.muse-bridge/PROJECT_DECISIONS.md` there.
+
+## Pairing a headset (LAN + QR code)
+
+Pairing is on by default, so a Quest on the same Wi-Fi can connect without a cable:
+
+1. Besides loopback, the bridge listens on each **private LAN IPv4 address** of this machine
+   (10/8, 172.16/12, 192.168/16), never on `0.0.0.0`. Loopback-only, link-local and VPN or virtual
+   interfaces (`utun`, `tun`, `wg`, `tailscale`, `docker`, `bridge`, `awdl`, `feth`, …) are
+   skipped.
+2. It keeps a **pairing token** (128 random bits, base64url) in `~/.muse-bridge/pairing.json`
+   (mode 0600), so a paired headset stays paired across restarts. `muse-bridge --reset-pairing`
+   rotates it. If `BRIDGE_TOKEN` is set, that is the pairing token.
+3. After the "Listening" lines it prints a **QR code** with the caption *"Scan with Monkey Agents
+   on your Quest to connect (same Wi-Fi). Pairing token stays on this machine; anyone who scans
+   this code can run agents as you."* The same code is at `http://localhost:3141/pair`.
+
+The QR payload is short (QR version 10 or less):
+
+```
+musebridge://pair?u=http%3A%2F%2F192.168.1.20%3A3141&u=http%3A%2F%2F10.0.0.7%3A3141&t=<token>&n=my-mac
+```
+
+- `u`: a base URL, URL-encoded, once per LAN address, best first (the primary Wi-Fi/Ethernet
+  interface, such as `en0`, `eth0` or `wlan0`, comes first). Try them in order.
+- `t`: the pairing token. Send it as `Authorization: Bearer <t>` on every request.
+- `n`: the machine's short hostname, for display.
+
+**Auth rules:**
+
+| Request from | Needs |
+|---|---|
+| Loopback (`127.0.0.1`, `::1`) | Nothing, or `BRIDGE_TOKEN` when it is set (as before) |
+| Any other address (the LAN) | `Authorization: Bearer <pairing token>` (or `BRIDGE_TOKEN`), always. 401 otherwise; 403 when pairing is off and there's no `BRIDGE_TOKEN` |
+| `GET /health` | Nothing, from anywhere (the connection indicator) |
+
+Tokens are compared in constant time. `BRIDGE_ORIGINS` and `MAX_RPM` apply as before.
+
+**The trade-off:** the LAN listeners use plain HTTP. Anyone on the network who gets the token
+(by scanning the code, seeing your screen, or sniffing the Wi-Fi traffic) can run agents with
+every action pre-approved, as you. Pair only on a Wi-Fi you trust, rotate with `--reset-pairing`
+if the code leaked, and use `--no-pair` (or `MUSE_BRIDGE_PAIR=0`) to keep the bridge on loopback,
+with `adb reverse` over USB instead ([below](#connecting-from-a-quest)). The LAN addresses are
+read at startup: restart the bridge after switching networks.
+
+### `GET /pair`, `GET /pair.json`
+
+Only for a browser or script on this machine: they answer only to loopback clients that use a
+loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`), and are 403 from the LAN, even with the token
+(this also stops DNS-rebinding pages from reading the token). With `BRIDGE_TOKEN` set they need it
+like any loopback request. They are 404 when pairing is off or no LAN address was found.
+
+- `GET /pair`: an HTML page with the QR code as inline SVG, the caption and the addresses.
+- `GET /pair.json`:
+
+  ```json
+  {"payload":"musebridge://pair?u=http%3A%2F%2F192.168.1.20%3A3141&t=…&n=my-mac","urls":["http://192.168.1.20:3141"],"hostname":"my-mac"}
+  ```
+
+## Project suggestions
+
+At startup, while the bridge binds its ports, it looks for the projects you edited most
+recently and suggests them as agents. Nothing is registered until you accept one.
+
+1. **Scan** (usually well under a second, capped at about 4 s): the folders in
+   `MUSE_BRIDGE_SCAN_ROOTS` / `--scan-root`, else those of `~/Projects`, `~/projects`, `~/code`,
+   `~/Code`, `~/src`, `~/dev`, `~/Developer`, `~/repos`, `~/workspace` and `~/Documents/GitHub`
+   that exist, else `~` itself (2 levels deep). A project is a directory up to 3 levels down with
+   `.git`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, a `*.sln` or a Unity
+   `ProjectSettings` folder. Hidden folders and `node_modules`, `Library`, `Temp`, `build`,
+   `dist`, `.venv`, `vendor`, `Pods`, `DerivedData` (and similar) are skipped. For the most recent
+   candidates it walks at most 2000 entries each to find the newest files. Registered directories
+   are left out; the 8 newest are kept.
+2. **Rank:** one `muse exec --json` turn **without `--yolo`**, with shell, writes and web tools
+   disabled, in an empty temporary workspace. The prompt carries everything Muse needs (name,
+   path, last edit, recent files, the first 400 characters of the README). Muse picks up to 5 and
+   writes one line about what seems to be in progress. Its answer is validated: the directory
+   must be one of the candidates, and a slug that is invalid, reserved, taken or repeated is
+   replaced. If Muse fails, takes more than 90 s or answers something unusable, the scan's order
+   is used, with reasons like `Edited 12 min ago: src/app.ts, README.md`.
+3. The terminal prints the list with a `curl` line to accept one.
+
+The state goes `idle` → `scanning` → `ranking` → `ready` (or `failed`). Dismissed suggestions stay
+hidden until the bridge restarts. `--no-discover` / `MUSE_BRIDGE_DISCOVER=0` turns all of this off.
+
+### `GET /suggestions`
+
+```json
+{
+  "state": "ready",
+  "updatedAt": "2026-11-08T09:12:03.120Z",
+  "enabled": true,
+  "items": [{
+    "slug": "todo-api", "title": "Todo API", "directory": "/Users/me/code/todo-api",
+    "reason": "Adding pagination to the users endpoint",
+    "lastModified": "2026-11-08T09:00:41.000Z",
+    "recentFiles": ["src/routes/users.ts", "src/server.ts", "README.md"]
+  }]
+}
+```
+
+`enabled` is `false` with `--no-discover`. In state `failed` there is also an `error` string.
+
+### `POST /suggestions/:slug/accept`
+
+Registers the project exactly as `/register <slug> <directory> <title>` does, removes it from the
+suggestions and returns `{"agent": {…}}`, the new agent in the same shape as an item of
+`GET /agents`. 404 for an unknown suggestion, 409 if the slug was registered meanwhile, 400 if the
+directory is gone. A feed `agents_changed` event follows.
+
+### `POST /suggestions/:slug/dismiss`, `POST /suggestions/refresh`
+
+`dismiss` removes a suggestion (`{"status":"ok"}`, 404 if unknown). `refresh` re-runs discovery
+and returns **202** with the current state (409 with `--no-discover`); a refresh already running is
+joined, not restarted.
 
 ## How a turn works
 
@@ -210,8 +335,8 @@ Every registered project's state in one call, sorted by slug:
 
 One stream for all agents. It carries the events of every project run, whoever started it:
 `/ask/stream`, `/ask`, `POST /agents/:slug/ask`, `/nudge`, the hourly cron, and the
-auto-continue, pros/cons and wrap-up rounds inside a turn. Bridge commands without a project
-(`/list`, `/help`, …) are not on it.
+auto-continue, pros/cons and wrap-up rounds inside a turn, plus the bridge-wide `suggestions` and
+`agents_changed` events. Bridge commands without a project (`/list`, `/help`, …) are not on it.
 
 ```
 id: 42
@@ -231,8 +356,10 @@ Each event's `id:` is its `seq`, a counter shared by all agents that only goes u
 | `done` | `response`, `speech`, `decision`, `rating` | The run finished. `decision` and `rating` are parsed from the reply's JSON (`{tldr, other_findings, assumptions_made, decision, rating}`), `null` if it wasn't JSON. `speech` is the `tldr`. This is the agent's own rating: the bridge may raise it before storing the decision (to 10 for a turn with no tool calls, or one that is "waiting for" something), so `GET /agents` can show a higher one |
 | `error` | `error` | The run failed (`Stopped by user 🛑` after a stop) |
 | `aborted` | | The run's process was terminated unexpectedly |
+| `suggestions` | `state`, `updatedAt`, `enabled`, `items`, `error?` | The [suggestions](#project-suggestions) changed: the same fields as `GET /suggestions`. `slug` and `runId` are `null` |
+| `agents_changed` | | A project was registered (`/register` or an accepted suggestion). Reload `GET /agents`. `slug` and `runId` are `null` |
 
-Every run ends with exactly one of `done`, `error` or `aborted`, followed by `agent_state`. The
+`suggestions` and `agents_changed` are bridge-wide, not part of any run. Every run ends with exactly one of `done`, `error` or `aborted`, followed by `agent_state`. The
 `/ask/stream`-only events (`meta`, `final_prompt`, `cli_params`) are not on the feed. A `run`
 event's `runId` is the same id `/ask/stream` sends and `POST /agents/:slug/ask` returns.
 
@@ -296,9 +423,13 @@ The broadcast feed: output of cron auto-decides and `POST /notify` messages, as
 - `GET /usage` returns Muse token usage, `{"muse":{"lastRun":{…},"today":{…},"allowance":…}}`,
   from each run's `run.usage` event and `muse usage --json`.
 
-## Connecting from a Quest (Agent Huddle)
+## Connecting from a Quest
 
-Keep the bridge on loopback and tunnel the headset's localhost to it over USB:
+Over Wi-Fi: scan the QR code the bridge prints ([Pairing](#pairing-a-headset-lan--qr-code)). The
+app keeps the URLs and the token, and sends `Authorization: Bearer <token>` to the first URL that
+answers `GET /health`.
+
+Over USB, with `--no-pair`: keep the bridge on loopback and tunnel the headset's localhost to it:
 
 ```sh
 adb reverse tcp:3141 tcp:3141
@@ -309,7 +440,9 @@ Run the command again after reconnecting the headset. On Android, plain HTTP to 
 allowed, for example with a network security config limited to `127.0.0.1`.
 
 In VR: `GET /agents` is the agent list and its state, and one `GET /feed` connection drives
-every avatar (resume it with `Last-Event-ID` after the headset sleeps). `POST /agents/:slug/ask`
+every avatar (resume it with `Last-Event-ID` after the headset sleeps). `GET /suggestions` and the
+`suggestions` feed event offer projects to add as agents (`POST /suggestions/:slug/accept`), and
+`agents_changed` says when to reload `GET /agents`. `POST /agents/:slug/ask`
 sends a turn, `POST /agents/:slug/stop` is the stop gesture, `speech` is what the avatar says, and
 `GET /health` is the connection indicator. `POST /ask/stream` still works for a client that wants
 one stream per turn.
@@ -318,9 +451,18 @@ one stream per turn.
 
 - **Agents run with `--yolo`:** every shell command, file write and web request they choose runs
   without asking. A request to `/ask` can run arbitrary commands as your user.
-- **Loopback only by default** (`127.0.0.1` and `::1`). The bridge refuses to start on any other
-  interface unless `BRIDGE_TOKEN` is set.
-- **Never expose the bridge without a token and TLS.** If you need it beyond this machine, prefer
+- **Loopback, plus the LAN with a token.** Loopback (`127.0.0.1`, `::1`) behaves as it always
+  did. With pairing on (the default), the bridge also listens on this machine's private LAN
+  addresses, and every request from a non-loopback address needs the pairing token. That traffic
+  is **plain HTTP**: anyone on the network who has the token, or can sniff it, can run agents as
+  you. Use a trusted Wi-Fi, `--reset-pairing` if the code leaked, and `--no-pair` to stay on
+  loopback. Explicit `--host` / `BRIDGE_HOSTS` addresses beyond loopback are still refused unless
+  `BRIDGE_TOKEN` is set.
+- **Discovery reads, it doesn't run.** The startup scan only lists directories and reads file
+  times and README excerpts. The ranking turn runs without `--yolo`, with no tools, in an empty
+  temporary workspace. Its prompt contains project names, paths, recent file names and README
+  excerpts, which go to Muse like any other prompt. `--no-discover` turns it off.
+- **Beyond your LAN, add TLS.** If you need the bridge beyond this machine and network, prefer
   an SSH or Tailscale tunnel, or a TLS-terminating reverse proxy with a long random
   `BRIDGE_TOKEN`. Don't put the token on the command line. Even then, treat anyone with the token
   as having shell access.
@@ -336,6 +478,11 @@ one stream per turn.
 
 ### Done
 
+- **Wi-Fi pairing:** LAN listeners guarded by a persistent pairing token, shown as a QR code in
+  the terminal and on `GET /pair`.
+- **Project suggestions:** recently edited projects found at startup, ranked by a read-only Muse
+  turn, accepted with `POST /suggestions/:slug/accept`; `suggestions` and `agents_changed` feed
+  events.
 - **`GET /agents`:** every project's state in one call (busy, run id, last run, pending decision
   and rating, last speech), plus optional `avatar`, `color` and `voice` fields in the project file.
 - **One live feed for all agents:** `GET /feed` carries every run's events tagged
