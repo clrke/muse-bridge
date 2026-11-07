@@ -12,6 +12,9 @@ import { debug } from './debug.js';
 import { RunJournal, type JournalEvent } from './run-journal.js';
 import { Feed, type FeedEvent } from './feed.js';
 import { createRun, type RunReporter, type RunSource } from './run-reporter.js';
+import { isLoopbackAddress, pairPageHtml, renderSvgQr, type PairInfo } from './pairing.js';
+import type { Suggestions } from './suggestions.js';
+import type { ProjectConfig } from './types.js';
 
 /** One SSE frame with its journal sequence as the event id. */
 function sseFrame(ev: JournalEvent): string {
@@ -37,6 +40,36 @@ export interface AppDeps {
   feed?: Feed;
   /** GET /feed keep-alive (`: ping`) interval (ms). Default 15s. */
   feedPingMs?: number;
+  /**
+   * LAN pairing. When set, requests from non-loopback addresses are accepted with
+   * `Authorization: Bearer <token>`, and loopback clients can fetch the QR from GET /pair.
+   * `info()` is null until the LAN listeners are up (or when there is no LAN address).
+   */
+  pairing?: { token: string; info: () => PairInfo | null };
+  /** Project discovery behind /suggestions. Without it, GET /suggestions reports `enabled:false`. */
+  suggestions?: Suggestions;
+  /** The request's remote address (tests override it). Default: the socket's. */
+  remoteAddressOf?: (req: express.Request) => string | undefined;
+}
+
+/**
+ * Bridge-wide feed events: `agents_changed` after a project is registered (any path), and
+ * `suggestions` whenever the suggestion list or its state changes.
+ */
+export function wireBridgeEvents(deps: { commandRouter: CommandRouter; feed: Feed; suggestions?: Suggestions }): void {
+  const { commandRouter, feed, suggestions } = deps;
+  commandRouter.onAgentsChanged = () => {
+    feed.bridgeEvent('agents_changed');
+    void suggestions?.pruneRegistered().catch(() => {});
+  };
+  if (suggestions) suggestions.onChange = (snap) => { feed.bridgeEvent('suggestions', { ...snap }); };
+}
+
+/** True when the Host header names this machine's loopback (not a LAN address or a rebound DNS name). */
+function loopbackHostHeader(host: string | undefined): boolean {
+  if (!host) return false;
+  const name = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.replace(/:\d+$/, '');
+  return name.toLowerCase() === 'localhost' || isLoopbackAddress(name);
 }
 
 /** Wire shape of one agent in GET /agents. */
@@ -96,15 +129,29 @@ export function createApp(deps: AppDeps): express.Express {
   app.use(cors({ origin: (origin, cb) => cb(null, !origin || isAllowedOrigin(origin)) }));
   app.use(express.json({ limit: '1mb' }));
 
-  // Optional bearer token on every route except /health.
-  if (config.token) {
-    const token = config.token;
-    app.use((req, res, next) => {
-      if (req.path === '/health') return next();
-      if (tokenMatches(String(req.headers['authorization'] ?? ''), token)) return next();
+  // Auth on every route except /health. Loopback: BRIDGE_TOKEN when set, else open (as
+  // always). Any other address (the LAN listeners): the pairing token or BRIDGE_TOKEN, always.
+  const remoteOf = deps.remoteAddressOf ?? ((req: express.Request) => req.socket.remoteAddress);
+  const isLoopbackReq = (req: express.Request) => isLoopbackAddress(remoteOf(req));
+  const lanTokens = [config.token, deps.pairing?.token].filter((t): t is string => !!t);
+  app.use((req, res, next) => {
+    if (req.path === '/health') return next();
+    const auth = String(req.headers['authorization'] ?? '');
+    if (isLoopbackReq(req)) {
+      if (!config.token || tokenMatches(auth, config.token)) return next();
       res.status(401).json({ error: 'Unauthorized' });
-    });
-  }
+      return;
+    }
+    if (lanTokens.length === 0) {
+      res.status(403).json({ error: 'LAN access is off: pair the device (pairing on) or set BRIDGE_TOKEN' });
+      return;
+    }
+    // Check every token (no early exit) so timing doesn't say which one nearly matched.
+    let ok = false;
+    for (const t of lanTokens) ok = tokenMatches(auth, t) || ok;
+    if (ok) return next();
+    res.status(401).json({ error: 'Unauthorized' });
+  });
 
   const stats = { requestsServed: 0, totalMs: 0, lastError: null as string | null };
   const startTime = Date.now();
@@ -349,32 +396,105 @@ export function createApp(deps: AppDeps): express.Express {
     }
   });
 
+  /** One project as GET /agents reports it. */
+  const agentInfo = (p: ProjectConfig): AgentInfo => {
+    const lastRun = feed.lastRunAt(p.slug);
+    const d = p.decision;
+    return {
+      slug: p.slug,
+      title: optString(p.title) ?? p.slug,
+      busy: feed.isBusy(p.slug) || sessionManager.isRunning(p.slug),
+      runId: feed.currentRunId(p.slug),
+      lastRunAt: lastRun != null ? new Date(lastRun).toISOString() : iso(p.lastConversationAt),
+      // Only a stored decision is pending: rating 0 auto-continues and is never stored, and
+      // the next message to the project clears it.
+      decision: d && typeof d.summary === 'string' && typeof d.rating === 'number' && d.rating >= 1
+        ? { text: d.summary, rating: d.rating, at: iso(d.at) ?? iso(p.lastConversationAt) ?? iso(p.createdAt) ?? new Date(0).toISOString() }
+        : null,
+      lastSpeech: feed.lastSpeech(p.slug),
+      avatar: optString(p.avatar),
+      color: optString(p.color),
+      voice: optString(p.voice),
+    };
+  };
+
   // Every project's state in one call, for the VR agent list.
   app.get('/agents', async (_req, res) => {
     const projects = (await projectStore.loadAll())
       .filter(p => p && typeof p.slug === 'string')
       .sort((a, b) => a.slug.localeCompare(b.slug));
-    const agents: AgentInfo[] = projects.map((p) => {
-      const lastRun = feed.lastRunAt(p.slug);
-      const d = p.decision;
-      return {
-        slug: p.slug,
-        title: optString(p.title) ?? p.slug,
-        busy: feed.isBusy(p.slug) || sessionManager.isRunning(p.slug),
-        runId: feed.currentRunId(p.slug),
-        lastRunAt: lastRun != null ? new Date(lastRun).toISOString() : iso(p.lastConversationAt),
-        // Only a stored decision is pending: rating 0 auto-continues and is never stored, and
-        // the next message to the project clears it.
-        decision: d && typeof d.summary === 'string' && typeof d.rating === 'number' && d.rating >= 1
-          ? { text: d.summary, rating: d.rating, at: iso(d.at) ?? iso(p.lastConversationAt) ?? iso(p.createdAt) ?? new Date(0).toISOString() }
-          : null,
-        lastSpeech: feed.lastSpeech(p.slug),
-        avatar: optString(p.avatar),
-        color: optString(p.color),
-        voice: optString(p.voice),
-      };
-    });
-    res.json({ agents });
+    res.json({ agents: projects.map(agentInfo) });
+  });
+
+  // ── Pairing (loopback only: the page shows the token) ──────────────────────
+  // The Host check also defeats DNS rebinding: a web page that rebinds its own name to
+  // 127.0.0.1 sends that name, not localhost, in Host.
+  const pairGuard = (req: express.Request, res: express.Response): PairInfo | null => {
+    if (!isLoopbackReq(req) || !loopbackHostHeader(req.headers.host)) {
+      res.status(403).json({ error: 'The pairing code is only shown on this machine (http://localhost)' });
+      return null;
+    }
+    const info = deps.pairing?.info() ?? null;
+    if (!info) {
+      res.status(404).json({ error: deps.pairing ? 'No LAN address to pair over (connect to Wi-Fi and restart)' : 'Pairing is off (--no-pair)' });
+      return null;
+    }
+    return info;
+  };
+
+  app.get('/pair.json', (req, res) => {
+    const info = pairGuard(req, res);
+    if (info) res.set('Cache-Control', 'no-store').json(info);
+  });
+
+  app.get('/pair', async (req, res) => {
+    const info = pairGuard(req, res);
+    if (!info) return;
+    const svg = await renderSvgQr(info.payload);
+    res.set({ 'Cache-Control': 'no-store', 'Content-Type': 'text/html; charset=utf-8' }).send(pairPageHtml(svg, info));
+  });
+
+  // ── Suggestions (project discovery) ───────────────────────────────────────
+  const suggestions = deps.suggestions;
+  const noDiscovery = { state: 'idle', updatedAt: null, items: [], enabled: false };
+
+  app.get('/suggestions', (_req, res) => {
+    res.json(suggestions ? suggestions.snapshot() : noDiscovery);
+  });
+
+  app.post('/suggestions/refresh', (_req, res) => {
+    if (!suggestions?.enabled) {
+      res.status(409).json({ error: 'Discovery is off (--no-discover)' });
+      return;
+    }
+    void suggestions.refresh();
+    res.status(202).json(suggestions.snapshot());
+  });
+
+  app.post('/suggestions/:slug/accept', async (req, res) => {
+    const slug = String(req.params.slug ?? '').toLowerCase();
+    const item = suggestions?.find(slug);
+    if (!suggestions || !item) {
+      res.status(404).json({ error: `Unknown suggestion: ${slug}` });
+      return;
+    }
+    const r = await commandRouter.registerProject(item.slug, item.directory, item.title);
+    if (!r.ok) {
+      res.status(r.code === 'exists' ? 409 : 400).json({ error: r.error });
+      return;
+    }
+    suggestions.remove(item.slug);
+    console.log(`[Bridge] suggestion accepted: /${item.slug} -> ${item.directory}`);
+    res.json({ agent: agentInfo(r.project) });
+  });
+
+  app.post('/suggestions/:slug/dismiss', (req, res) => {
+    const slug = String(req.params.slug ?? '').toLowerCase();
+    if (!suggestions?.remove(slug, { dismiss: true })) {
+      res.status(404).json({ error: `Unknown suggestion: ${slug}` });
+      return;
+    }
+    res.json({ status: 'ok' });
   });
 
   // Send a turn without holding a connection: 202 at once, the run's events arrive on /feed.

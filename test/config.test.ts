@@ -27,6 +27,19 @@ describe('loadConfig', () => {
   });
 });
 
+describe('pairing and discovery config', () => {
+  it('defaults pairing and discovery on, with no explicit scan roots', () => {
+    expect(loadConfig({})).toMatchObject({ pair: true, resetPairing: false, discover: true, scanRoots: [] });
+  });
+  it('reads MUSE_BRIDGE_PAIR / _DISCOVER / _SCAN_ROOTS, and flags win', () => {
+    const env = { MUSE_BRIDGE_PAIR: '0', MUSE_BRIDGE_DISCOVER: 'false', MUSE_BRIDGE_SCAN_ROOTS: '~/code:/srv/repos,/opt/w' };
+    expect(loadConfig(env)).toMatchObject({ pair: false, discover: false, scanRoots: [path.join(os.homedir(), 'code'), '/srv/repos', '/opt/w'] });
+    const o = parseCliArgs(['--no-pair', '--reset-pairing', '--no-discover', '--scan-root', '~/a', '--scan-root', '/b,/c']).overrides;
+    expect(o).toEqual({ pair: false, resetPairing: true, discover: false, scanRoots: ['~/a', '/b', '/c'] });
+    expect(loadConfig({}, o).scanRoots).toEqual([path.join(os.homedir(), 'a'), '/b', '/c']);
+  });
+});
+
 describe('parseCliArgs', () => {
   it('parses flags and rejects unknown ones', () => {
     expect(parseCliArgs(['--no-cron', '-H', '127.0.0.1,::1']).overrides).toEqual({ cron: false, hosts: ['127.0.0.1', '::1'] });

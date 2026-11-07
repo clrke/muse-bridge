@@ -31,10 +31,24 @@ export interface Config {
   envPassthrough: string[];
   /** Verbose tracing: comma-separated scopes, or '1' for all. */
   debug: string;
+  /** LAN pairing: also listen on private LAN addresses, guarded by the pairing token, and show a QR code. */
+  pair: boolean;
+  /** Rotate the stored pairing token at startup (`--reset-pairing`), unpairing every device. */
+  resetPairing: boolean;
+  /** Discover recently edited projects at startup and suggest them (GET /suggestions). */
+  discover: boolean;
+  /** Folders to scan for projects. Empty: the usual code folders under the home directory. */
+  scanRoots: string[];
 }
 
 const list = (s: string | undefined): string[] =>
   (s ?? '').split(',').map(x => x.trim()).filter(Boolean);
+
+const off = (s: string | undefined) => s === '0' || s === 'false' || s === 'off' || s === 'no';
+
+/** Comma- or colon-separated paths (a colon list like PATH works too). */
+export const pathList = (s: string | undefined): string[] =>
+  (s ?? '').split(/[,:]/).map(x => x.trim()).filter(Boolean);
 
 const int = (s: string | undefined, fallback: number): number => {
   const n = Number.parseInt(s ?? '', 10);
@@ -75,8 +89,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     cron: env.MUSE_BRIDGE_CRON !== '0' && env.MUSE_BRIDGE_CRON !== 'false',
     envPassthrough: list(env.MUSE_ENV_PASSTHROUGH),
     debug: env.DEBUG ?? '',
+    pair: !off(env.MUSE_BRIDGE_PAIR),
+    resetPairing: false,
+    discover: !off(env.MUSE_BRIDGE_DISCOVER),
+    scanRoots: pathList(env.MUSE_BRIDGE_SCAN_ROOTS).map(expandHome),
   };
   const defined = Object.fromEntries(Object.entries(overrides).filter(([, v]) => v !== undefined));
+  if (overrides.scanRoots) defined.scanRoots = overrides.scanRoots.map(expandHome);
   return { ...base, ...defined, homeDir, projectsDir };
 }
 

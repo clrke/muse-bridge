@@ -18,12 +18,21 @@ Options:
       --home <dir>        State directory (env MUSE_BRIDGE_HOME, default ~/.muse-bridge)
       --sender <name>     Sender name when a client sends none (env MUSE_BRIDGE_SENDER, default "user")
       --no-cron           Disable the hourly auto-decide job (env MUSE_BRIDGE_CRON=0)
+      --no-pair           Loopback only: no LAN listeners, no pairing QR (env MUSE_BRIDGE_PAIR=0)
+      --reset-pairing     Rotate the pairing token, unpairing every device
+      --no-discover       Don't scan for recent projects to suggest (env MUSE_BRIDGE_DISCOVER=0)
+      --scan-root <dir>   Folder to scan for projects; repeatable (env MUSE_BRIDGE_SCAN_ROOTS,
+                          comma/colon list; default ~/Projects, ~/code, ~/src, … that exist)
   -v, --version           Print the version
   -h, --help              Show this help
 
-Auth: set BRIDGE_TOKEN in the environment to require "Authorization: Bearer <token>".
-Agents run with every action pre-approved (muse --yolo): never expose the bridge beyond
-loopback without BRIDGE_TOKEN and TLS.`;
+Pairing (on by default): the bridge also listens on this machine's private LAN addresses and
+prints a QR code for a headset to scan. LAN requests need the pairing token (stored in
+<home>/pairing.json, or BRIDGE_TOKEN if set). Anyone with it can run agents as you, over plain
+HTTP: use a trusted Wi-Fi, or --no-pair.
+
+Auth: set BRIDGE_TOKEN in the environment to require "Authorization: Bearer <token>" from
+loopback clients too. Agents run with every action pre-approved (muse --yolo).`;
 
 function version(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -45,6 +54,10 @@ export function parseCliArgs(argv: string[]): { help?: boolean; version?: boolea
       home: { type: 'string' },
       sender: { type: 'string' },
       'no-cron': { type: 'boolean' },
+      'no-pair': { type: 'boolean' },
+      'reset-pairing': { type: 'boolean' },
+      'no-discover': { type: 'boolean' },
+      'scan-root': { type: 'string', multiple: true },
       version: { type: 'boolean', short: 'v' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -62,6 +75,10 @@ export function parseCliArgs(argv: string[]): { help?: boolean; version?: boolea
   if (values.home) overrides.homeDir = values.home;
   if (values.sender) overrides.senderName = values.sender;
   if (values['no-cron']) overrides.cron = false;
+  if (values['no-pair']) overrides.pair = false;
+  if (values['reset-pairing']) overrides.resetPairing = true;
+  if (values['no-discover']) overrides.discover = false;
+  if (values['scan-root']?.length) overrides.scanRoots = values['scan-root'].flatMap(r => r.split(',')).map(r => r.trim()).filter(Boolean);
   return { help: values.help, version: values.version, overrides };
 }
 
