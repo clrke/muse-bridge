@@ -92,7 +92,9 @@ export class MspClient {
 
   constructor(private opts: MspClientOptions) {
     this.timeoutMs = opts.requestTimeoutMs ?? 15000;
-    this.name = opts.clientName ?? 'muse-bridge';
+    // The host requires ^[a-z0-9_]+$ (SS1.4.1): no hyphens. Found by the first
+    // live E2E turn — the spike probes used 'spike' and never tripped this.
+    this.name = opts.clientName ?? 'muse_bridge';
     this.version = opts.clientVersion ?? '0.1.0';
   }
 

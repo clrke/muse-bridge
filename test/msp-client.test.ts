@@ -68,9 +68,10 @@ describe('MspClient', () => {
     const sent = f.sent();
     expect(sent[0]).toMatchObject({
       jsonrpc: '2.0', id: 1, method: 'initialize',
-      params: { clientInfo: { name: 'muse-bridge', version: '0.1.0' } },
+      params: { clientInfo: { name: 'muse_bridge', version: '0.1.0' } },
     });
     expect(sent[1]).toEqual({ jsonrpc: '2.0', method: 'initialized', params: {} });
+    expect(sent[0].params.clientInfo.name).toMatch(/^[a-z0-9_]+$/); // host SS1.4.1 rule
   });
 
   it('start() is idempotent while the host lives', async () => {
