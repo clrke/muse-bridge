@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { Config } from './config.js';
 import { recordMuseRun } from './muse-usage.js';
 import { museSubagentEvent, museTodoDetail, museToolLine } from './muse-events.js';
+import type { MspApprovalSummary } from './msp-events.js';
 
 export interface SessionQueryOptions {
   cwd: string;
@@ -26,6 +27,8 @@ export interface SessionQueryOptions {
   /** `meta` is passed only for subagent text (`parentId` = the subagent's id). */
   onMessage?: (text: string, meta?: MessageMeta) => void;
   onToolUse?: (name: string, detail: string, meta?: ToolUseMeta) => void;
+  /** Serve driver only: one call per resolved approval (exec pre-approves everything). */
+  onApproval?: (summary: MspApprovalSummary) => void;
 }
 
 /** Attribution for assistant text a subagent emitted. */
@@ -66,8 +69,8 @@ interface SessionState {
   stopRequested: boolean;
 }
 
-/** `muse exec --reasoning-effort` levels. */
-const MUSE_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+/** `muse exec --reasoning-effort` levels (shared with the serve driver's turn/start). */
+export const MUSE_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 /**
  * Variables never handed to `muse` (agents run with every action pre-approved, so anything in
