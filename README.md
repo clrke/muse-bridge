@@ -503,8 +503,13 @@ one stream per turn.
 
 ### Next
 
-- **Approval decisions from VR:** wire judge escalations (currently auto-denied) to a pinch
-  decision in the headset, through the driver's `decideApproval` path.
+- **Serve driver hardening:** real-world miles on `--driver serve` (judge-gated tools,
+  approval feed, interrupt brake) before any discussion of making it the default. Note:
+  VR pinch decisions on escalations were investigated and stopped — the stable wire has
+  never surfaced a pending `approval/request` in live probes (the judge auto-resolves),
+  no config forces escalation, and `request_user_input` is withheld in serve sessions,
+  so there is currently nothing to wire a decision UI to. Escalations stay auto-denied
+  fail-closed.
 
 ## Development
 
