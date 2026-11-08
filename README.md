@@ -3,7 +3,7 @@
 A small HTTP + Server-Sent Events server that drives [Muse Code](https://dev.meta.ai/products/muse-code)
 (Meta's coding CLI, `muse`) on your machine, one persistent session per project.
 
-A client (a chat bot, a script, or a VR app such as **Agent Huddle** on Quest) sends
+A client (a chat bot, a script, or a VR app such as **Monkey Agents** on Quest) sends
 `/<project> <message>`. The bridge runs a `muse exec --json` turn in that project's directory
 and streams back everything the agent does: what it says, each tool call, subagents starting and
 finishing, and the final reply with a structured next-step decision.
@@ -112,7 +112,7 @@ Pairing is on by default, so a Quest on the same Wi-Fi can connect without a cab
 2. It keeps a **pairing token** (128 random bits, base64url) in `~/.muse-bridge/pairing.json`
    (mode 0600), so a paired headset stays paired across restarts. `muse-bridge --reset-pairing`
    rotates it. If `BRIDGE_TOKEN` is set, that is the pairing token.
-3. After the "Listening" lines it prints a **QR code** with the caption *"Scan with Agent Huddle
+3. After the "Listening" lines it prints a **QR code** with the caption *"Scan with Monkey Agents
    on your Quest to connect (same Wi-Fi). Pairing token stays on this machine; anyone who scans
    this code can run agents as you."* The same code is at `http://localhost:3141/pair`.
 
@@ -476,7 +476,7 @@ one stream per turn.
   `muse` processes. `PATH`, `HOME` and the rest are kept. Use `MUSE_ENV_PASSTHROUGH` for the ones an
   agent really needs. Files on disk (`~/.ssh`, `~/.config/gh`, …) are still readable by agents.
 
-## Roadmap for Agent Huddle
+## Roadmap for Monkey Agents
 
 ### Done
 

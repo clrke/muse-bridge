@@ -15,7 +15,7 @@ export const PAIRING_FILE = 'pairing.json';
 
 /** Shown under the QR code, in the terminal and on GET /pair. */
 export const PAIR_CAPTION =
-  'Scan with Agent Huddle on your Quest to connect (same Wi-Fi). Pairing token stays on this machine; ' +
+  'Scan with Monkey Agents on your Quest to connect (same Wi-Fi). Pairing token stays on this machine; ' +
   'anyone who scans this code can run agents as you.';
 
 /** A fresh 128-bit token, base64url (22 chars). */

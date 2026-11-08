@@ -105,7 +105,7 @@ describe('GET /pair and /pair.json', () => {
     expect(h.status).toBe(200);
     expect(h.headers['content-type']).toMatch(/text\/html/);
     expect(h.text).toContain('<svg');
-    expect(h.text).toContain('Scan with Agent Huddle');
+    expect(h.text).toContain('Scan with Monkey Agents');
     expect((await request(app).get('/pair.json').set('Host', '[::1]:3141')).status).toBe(200);
   });
 
