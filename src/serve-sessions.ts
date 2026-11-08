@@ -17,7 +17,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Config } from './config.js';
 import { recordMuseRun } from './muse-usage.js';
 import { MspClient, MspError, type MspApprovalMode, type MspEvent } from './msp-client.js';
 import {
@@ -33,9 +32,12 @@ import {
   MUSE_EFFORTS,
   ONE_SHOT_KEY,
   STOPPED_BY_USER,
+  SessionManager,
   type QueryResult,
+  type SessionDriver,
   type SessionQueryOptions,
 } from './session-manager.js';
+import type { Config, SessionDriverKind } from './config.js';
 
 const STOP_GRACE_MS = 5_000;
 
@@ -74,6 +76,14 @@ interface TurnWaiter {
   reject: (e: Error) => void;
 }
 
+/** Build the configured driver. Exported for tests; server.ts is the only caller. */
+export function createSessionDriver(
+  driver: SessionDriverKind,
+  config: Pick<Config, 'musePath' | 'envPassthrough'>,
+): SessionDriver {
+  return driver === 'serve' ? new ServeSessionManager(config) : new SessionManager(config);
+}
+
 const canonical = (cwd: string): string => {
   try {
     return fs.realpathSync(cwd);
@@ -82,7 +92,7 @@ const canonical = (cwd: string): string => {
   }
 };
 
-export class ServeSessionManager {
+export class ServeSessionManager implements SessionDriver {
   private sessions = new Map<string, ServeState>();
   private spawnListeners = new Map<string, Set<(line: string) => void>>();
 

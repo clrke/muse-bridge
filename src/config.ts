@@ -6,6 +6,9 @@ import path from 'node:path';
 export const DEFAULT_HOSTS = ['127.0.0.1', '::1'];
 export const DEFAULT_PORT = 3141;
 
+/** How agent sessions run: one-shot `muse exec` children, or supervised `muse serve` hosts. */
+export type SessionDriverKind = 'exec' | 'serve';
+
 export interface Config {
   port: number;
   /** Interfaces to listen on. Default: loopback only. */
@@ -39,6 +42,8 @@ export interface Config {
   discover: boolean;
   /** Folders to scan for projects. Empty: the usual code folders under the home directory. */
   scanRoots: string[];
+  /** Session driver. Anything but 'serve' falls back to 'exec'. */
+  driver: SessionDriverKind;
 }
 
 const list = (s: string | undefined): string[] =>
@@ -93,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     resetPairing: false,
     discover: !off(env.MUSE_BRIDGE_DISCOVER),
     scanRoots: pathList(env.MUSE_BRIDGE_SCAN_ROOTS).map(expandHome),
+    driver: env.MUSE_BRIDGE_DRIVER === 'serve' ? 'serve' : 'exec',
   };
   const defined = Object.fromEntries(Object.entries(overrides).filter(([, v]) => v !== undefined));
   if (overrides.scanRoots) defined.scanRoots = overrides.scanRoots.map(expandHome);

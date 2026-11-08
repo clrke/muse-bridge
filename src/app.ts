@@ -7,7 +7,7 @@ import { GLOBAL_COMMANDS } from './command-router.js';
 import type { ProjectStore } from './project-store.js';
 import type { Config } from './config.js';
 import { getMuseUsage } from './muse-usage.js';
-import type { SessionManager } from './session-manager.js';
+import type { SessionDriver } from './session-manager.js';
 import { debug } from './debug.js';
 import { RunJournal, type JournalEvent } from './run-journal.js';
 import { Feed, type FeedEvent } from './feed.js';
@@ -27,7 +27,7 @@ export type SseResponse = express.Response & { clientKind?: string };
 export interface AppDeps {
   commandRouter: CommandRouter;
   projectStore: ProjectStore;
-  sessionManager: SessionManager;
+  sessionManager: SessionDriver;
   config: Pick<Config, 'token' | 'allowedOrigins' | 'maxRequestsPerMinute' | 'senderName'>;
   sseClients: Set<SseResponse>;
   /** Pushes a message to every /events subscriber. */

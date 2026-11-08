@@ -60,3 +60,19 @@ describe('exposure guard', () => {
     expect(() => assertSafeExposure({ hosts: ['0.0.0.0'], token: 'x' })).not.toThrow();
   });
 });
+
+describe('session driver config', () => {
+  it('defaults to exec', () => {
+    expect(loadConfig({})).toMatchObject({ driver: 'exec' });
+  });
+  it('reads MUSE_BRIDGE_DRIVER, falling back to exec for anything else', () => {
+    expect(loadConfig({ MUSE_BRIDGE_DRIVER: 'serve' })).toMatchObject({ driver: 'serve' });
+    expect(loadConfig({ MUSE_BRIDGE_DRIVER: 'sever' })).toMatchObject({ driver: 'exec' });
+  });
+  it('parses --driver strictly, and the flag wins over env', () => {
+    expect(parseCliArgs(['--driver', 'serve']).overrides).toEqual({ driver: 'serve' });
+    expect(() => parseCliArgs(['--driver', 'bogus'])).toThrow(/Invalid --driver/);
+    expect(loadConfig({ MUSE_BRIDGE_DRIVER: 'serve' }, parseCliArgs(['--driver', 'exec']).overrides))
+      .toMatchObject({ driver: 'exec' });
+  });
+});

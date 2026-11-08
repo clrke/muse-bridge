@@ -57,6 +57,25 @@ export interface QueryResult {
   sessionId: string;
 }
 
+/**
+ * One persistent agent session per project, however it is driven: one-shot
+ * `muse exec` children (SessionManager) or a `muse serve` host (serve-sessions).
+ * closeAll is serve-only — exec children exit with their turn.
+ */
+export interface SessionDriver {
+  onSpawn(slug: string, fn: (line: string) => void): () => void;
+  loadSession(slug: string, sessionId: string): void;
+  resetSession(slug: string): void;
+  stop(slug: string): { stopped: boolean; reason: string };
+  isRunning(slug: string): boolean;
+  anyRunning(): boolean;
+  getSessionId(slug: string): string | undefined;
+  query(slug: string, prompt: string, opts: SessionQueryOptions): Promise<QueryResult>;
+  oneShot(prompt: string, opts?: { key?: string; timeoutMs?: number; effort?: string }): Promise<string>;
+  waitForIdle(maxMs?: number, pollMs?: number): Promise<boolean>;
+  closeAll?(): Promise<void>;
+}
+
 interface SessionState {
   sessionId: string | undefined;
   forceNew: boolean;
@@ -153,7 +172,7 @@ const STOP_GRACE_MS = 5_000;
 /** Message thrown when a turn was deliberately stopped; clients special-case this. */
 export const STOPPED_BY_USER = 'Stopped by user 🛑';
 
-export class SessionManager {
+export class SessionManager implements SessionDriver {
   private sessions = new Map<string, SessionState>();
   private spawnListeners = new Map<string, Set<(line: string) => void>>();
 

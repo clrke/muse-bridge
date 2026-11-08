@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AskPayload, ProjectConfig, ProjectResponse } from './types.js';
 import type { MspApprovalSummary } from './msp-events.js';
-import type { SessionManager } from './session-manager.js';
+import type { SessionDriver } from './session-manager.js';
 import { PROJECT_NOTES_DIR, type ProjectStore } from './project-store.js';
 import { calculateDeadline, ratingToHours, extendDeadline, pauseForVacation, deadlineFromActiveHours } from './deadline.js';
 
@@ -497,7 +497,7 @@ export class CommandRouter {
   onAgentsChanged?: () => void;
 
   constructor(
-    private sessionManager: SessionManager,
+    private sessionManager: SessionDriver,
     private projectStore: ProjectStore,
   ) {}
 
@@ -1205,8 +1205,8 @@ export class CommandRouter {
   private queryCounted(
     slug: string,
     prompt: string,
-    opts: Parameters<SessionManager['query']>[2],
-  ): ReturnType<SessionManager['query']> {
+    opts: Parameters<SessionDriver['query']>[2],
+  ): ReturnType<SessionDriver['query']> {
     this.exchangeRoundTrips.set(slug, (this.exchangeRoundTrips.get(slug) ?? 0) + 1);
     return this.sessionManager.query(slug, prompt, opts);
   }

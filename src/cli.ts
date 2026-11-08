@@ -14,6 +14,10 @@ Options:
   -H, --host <addr>       Interface to listen on; repeat or comma-separate
                           (env BRIDGE_HOSTS, default 127.0.0.1,::1)
       --muse-path <path>  muse executable (env MUSE_PATH, default ~/.local/bin/muse or muse on PATH)
+      --driver <exec|serve>
+                          Session driver (env MUSE_BRIDGE_DRIVER, default exec): one-shot
+                          muse exec turns, or supervised muse serve hosts whose
+                          approvals stream to /feed as approval events
       --projects-dir <d>  Project files (env MUSE_BRIDGE_PROJECTS_DIR, default ~/.muse-bridge/projects)
       --home <dir>        State directory (env MUSE_BRIDGE_HOME, default ~/.muse-bridge)
       --sender <name>     Sender name when a client sends none (env MUSE_BRIDGE_SENDER, default "user")
@@ -32,7 +36,9 @@ prints a QR code for a headset to scan. LAN requests need the pairing token (sto
 HTTP: use a trusted Wi-Fi, or --no-pair.
 
 Auth: set BRIDGE_TOKEN in the environment to require "Authorization: Bearer <token>" from
-loopback clients too. Agents run with every action pre-approved (muse --yolo).`;
+loopback clients too. With --driver exec (default), agents run with every action
+pre-approved (muse --yolo); with --driver serve, tools run judge-gated and each
+approval streams to /feed (judge escalations are denied).`;
 
 function version(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +56,7 @@ export function parseCliArgs(argv: string[]): { help?: boolean; version?: boolea
       port: { type: 'string', short: 'p' },
       host: { type: 'string', short: 'H', multiple: true },
       'muse-path': { type: 'string' },
+      driver: { type: 'string' },
       'projects-dir': { type: 'string' },
       home: { type: 'string' },
       sender: { type: 'string' },
@@ -71,6 +78,10 @@ export function parseCliArgs(argv: string[]): { help?: boolean; version?: boolea
   }
   if (values.host?.length) overrides.hosts = values.host.flatMap(h => h.split(',')).map(h => h.trim()).filter(Boolean);
   if (values['muse-path']) overrides.musePath = values['muse-path'];
+  if (values.driver !== undefined) {
+    if (values.driver !== 'exec' && values.driver !== 'serve') throw new Error(`Invalid --driver: ${values.driver}`);
+    overrides.driver = values.driver;
+  }
   if (values['projects-dir']) overrides.projectsDir = values['projects-dir'];
   if (values.home) overrides.homeDir = values.home;
   if (values.sender) overrides.senderName = values.sender;

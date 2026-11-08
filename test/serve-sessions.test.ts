@@ -5,8 +5,8 @@ import os from 'node:os';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 import { spawn } from 'node:child_process';
-import { ServeSessionManager } from '../src/serve-sessions.js';
-import { STOPPED_BY_USER } from '../src/session-manager.js';
+import { ServeSessionManager, createSessionDriver } from '../src/serve-sessions.js';
+import { SessionManager, STOPPED_BY_USER } from '../src/session-manager.js';
 import { getMuseUsage, resetMuseUsage } from '../src/muse-usage.js';
 
 // Scripted `muse serve` hosts; wire shapes recorded live from 1.4.14.
@@ -412,5 +412,13 @@ describe('ServeSessionManager', () => {
     expect(f.sent().some((m: any) => m.method === 'session/leave')).toBe(true);
     expect(f.proc.kill).toHaveBeenCalledWith('SIGTERM');
     void p;
+  });
+});
+
+describe('createSessionDriver', () => {
+  it('builds the configured driver', () => {
+    const cfg = { musePath: '/opt/bin/muse', envPassthrough: [] };
+    expect(createSessionDriver('exec', cfg)).toBeInstanceOf(SessionManager);
+    expect(createSessionDriver('serve', cfg)).toBeInstanceOf(ServeSessionManager);
   });
 });

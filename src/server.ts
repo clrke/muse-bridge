@@ -4,7 +4,8 @@ import path from 'node:path';
 import type { Server } from 'node:http';
 import { isLoopbackHost, type Config } from './config.js';
 import { createApp, wireBridgeEvents, type SseResponse } from './app.js';
-import { ONE_SHOT_KEY, SessionManager } from './session-manager.js';
+import { ONE_SHOT_KEY } from './session-manager.js';
+import { createSessionDriver } from './serve-sessions.js';
 import { lanAddresses, loadPairingToken, pairInfo, PAIR_CAPTION, renderTerminalQr, type LanAddress, type PairInfo } from './pairing.js';
 import { resolveScanRoots, scanProjects } from './discovery.js';
 import { Suggestions, type SuggestionsSnapshot } from './suggestions.js';
@@ -59,7 +60,8 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
   const out = opts.out ?? ((t: string) => { process.stdout.write(t.endsWith('\n') ? t : `${t}\n`); });
 
   const projectStore = new ProjectStore(config.projectsDir);
-  const sessionManager = new SessionManager(config);
+  const sessionManager = createSessionDriver(config.driver, config);
+  console.log(`[Bridge] Session driver: ${config.driver === 'serve' ? 'serve (supervised hosts, approvals to /feed)' : 'exec (one-shot muse exec --yolo)'}`);
   const commandRouter = new CommandRouter(sessionManager, projectStore);
   const sseClients = new Set<SseResponse>();
   await projectStore.init();
@@ -199,7 +201,9 @@ export async function startServer(config: Config, opts: StartOptions = {}): Prom
         server.close();
         server.closeAllConnections?.();
       }
-      return sessionManager.waitForIdle(drainMs);
+      const drained = await sessionManager.waitForIdle(drainMs);
+      await sessionManager.closeAll?.(); // serve hosts are persistent; exec has none
+      return drained;
     },
   };
 }

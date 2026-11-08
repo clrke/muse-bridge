@@ -61,6 +61,7 @@ Environment variables, overridden by command-line flags (`muse-bridge --help`):
 | `MUSE_BRIDGE_DISCOVER` | `--no-discover` | on | [Project suggestions](#project-suggestions) at startup. `0` disables them |
 | `MUSE_BRIDGE_SCAN_ROOTS` | `--scan-root` (repeatable) | see below | Folders to scan for projects (comma- or colon-separated) |
 | `MUSE_PATH` | `--muse-path` | `~/.local/bin/muse`, else `muse` | The Muse Code executable |
+| `MUSE_BRIDGE_DRIVER` | `--driver` | `exec` | `exec`: one-shot `muse exec --yolo` turns. `serve`: supervised `muse serve` hosts — tools run judge-gated and each approval streams to `/feed` as an `approval` event (judge escalations are denied) |
 | `MUSE_BRIDGE_HOME` | `--home` | `~/.muse-bridge` | State directory (usage snapshot, `pairing.json`) |
 | `MUSE_BRIDGE_PROJECTS_DIR` | `--projects-dir` | `~/.muse-bridge/projects` | One `<slug>.md` file per project |
 | `MUSE_BRIDGE_SENDER` | `--sender` | `user` | Sender name used when a request has no `trigger.sender` |
@@ -353,6 +354,7 @@ Each event's `id:` is its `seq`, a counter shared by all agents that only goes u
 | `message` | `text`, `speech`, `parentId` | Agent text. `parentId` is `null` for the main session, else the subagent's id |
 | `tool` | `name`, `detail`, `id`, `parentId` | A tool call, as on `/ask/stream`. `id` is `null` except for `Agent` (the subagent's id) |
 | `agent_done` | `id`, `status` | A subagent ended |
+| `approval` | `tool`, `subject`, `decision`, `resolvedBy`, `policyResult`, `line` | A tool-call approval resolved (`--driver serve` only). `line` reads like `Bash 'pwd' — approved by llmJudge (allow)` |
 | `done` | `response`, `speech`, `decision`, `rating` | The run finished. `decision` and `rating` are parsed from the reply's JSON (`{tldr, other_findings, assumptions_made, decision, rating}`), `null` if it wasn't JSON. `speech` is the `tldr`. This is the agent's own rating: the bridge may raise it before storing the decision (to 10 for a turn with no tool calls, or one that is "waiting for" something), so `GET /agents` can show a higher one |
 | `error` | `error` | The run failed (`Stopped by user 🛑` after a stop) |
 | `aborted` | | The run's process was terminated unexpectedly |
@@ -493,17 +495,16 @@ one stream per turn.
   or code), for text-to-speech.
 - **Structured `done`:** `decision` and `rating` as fields on `done`, not only inside the
   response text.
+- **Supervised sessions via `muse serve`:** `--driver serve` runs each project on a persistent
+  MSP host over stdio instead of `--yolo` one-shots; tools run judge-gated, each approval
+  streams to `/feed` as an `approval` event, and stop is `turn/interrupt` with a kill fallback.
+  (Per-tool-call pinch-to-approve is not achievable on the stable wire — the host's LLM judge
+  auto-resolves approvals — so the relay supervises instead of gating.)
 
 ### Next
 
-- **Supervised sessions via `muse serve`:** replace `--yolo` one-shot turns with a small local
-  relay driving Muse's MSP server over stdio (spike 2026-11-08: JSONL framing, `session/start`,
-  `turn/start`, `turn/interrupt`, `approval/decide` all verified live; wire schema at
-  `muse schema generate-json-schema`). The relay streams each approval's lifecycle
-  (`approval/reviewing` → `resolvedBy`/`policyResult`) to VR and exposes interrupt as the brake.
-  Note: per-tool-call pinch-to-approve is not achievable on the stable wire — the host's LLM
-  judge auto-resolves approvals (observed: even `rm -rf` approved with no client escalation),
-  and permission profiles are experimental-only. `approval/decide` stays wired for escalations.
+- **Approval decisions from VR:** wire judge escalations (currently auto-denied) to a pinch
+  decision in the headset, through the driver's `decideApproval` path.
 
 ## Development
 
