@@ -142,8 +142,9 @@ describe('ServeSessionManager', () => {
     expect(onMessage.mock.calls.map((c) => c[0])).toEqual(['Looking.', '{"tldr":"ok"}']);
     expect(onToolUse).toHaveBeenCalledWith('Bash', 'pwd', { parentId: null });
     expect(onApproval).toHaveBeenCalledWith(expect.objectContaining({ decision: 'approved', resolvedBy: 'llmJudge' }));
-    expect(getMuseUsage().today.calls).toBe(1);
-    expect(getMuseUsage().today.inputTokens).toBe(10);
+    const usage = getMuseUsage();
+    expect(usage?.today.calls).toBe(1);
+    expect(usage?.today.inputTokens).toBe(10);
   });
 
   it('reuses one session across turns on the same host', async () => {
