@@ -496,9 +496,14 @@ one stream per turn.
 
 ### Next
 
-- **Approvals via `muse serve`:** pinch-to-approve individual tool calls instead of `--yolo`, by
-  driving Muse's JSON-RPC server (`approval/request`, `approval/decide`, `turn/interrupt`). It is
-  undocumented and listens only on stdio or a Unix socket, so a small local relay is needed.
+- **Supervised sessions via `muse serve`:** replace `--yolo` one-shot turns with a small local
+  relay driving Muse's MSP server over stdio (spike 2026-11-08: JSONL framing, `session/start`,
+  `turn/start`, `turn/interrupt`, `approval/decide` all verified live; wire schema at
+  `muse schema generate-json-schema`). The relay streams each approval's lifecycle
+  (`approval/reviewing` → `resolvedBy`/`policyResult`) to VR and exposes interrupt as the brake.
+  Note: per-tool-call pinch-to-approve is not achievable on the stable wire — the host's LLM
+  judge auto-resolves approvals (observed: even `rm -rf` approved with no client escalation),
+  and permission profiles are experimental-only. `approval/decide` stays wired for escalations.
 
 ## Development
 
