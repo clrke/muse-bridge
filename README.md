@@ -111,7 +111,7 @@ Pairing is on by default, so a Quest on the same Wi-Fi can connect without a cab
 2. It keeps a **pairing token** (128 random bits, base64url) in `~/.muse-bridge/pairing.json`
    (mode 0600), so a paired headset stays paired across restarts. `muse-bridge --reset-pairing`
    rotates it. If `BRIDGE_TOKEN` is set, that is the pairing token.
-3. After the "Listening" lines it prints a **QR code** with the caption *"Scan with Monkey Agents
+3. After the "Listening" lines it prints a **QR code** with the caption *"Scan with Agent Huddle
    on your Quest to connect (same Wi-Fi). Pairing token stays on this machine; anyone who scans
    this code can run agents as you."* The same code is at `http://localhost:3141/pair`.
 

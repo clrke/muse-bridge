@@ -113,7 +113,7 @@ describe('QR payload', () => {
     const html = pairPageHtml(svg, { payload, urls: ['http://192.168.1.20:3141'], hostname: '<my-mac>' });
     expect(html).toContain(svg);
     expect(html).toContain('&lt;my-mac&gt;');
-    expect(html).toContain('Scan with Monkey Agents on your Quest');
+    expect(html).toContain('Scan with Agent Huddle on your Quest');
     expect(PAIR_CAPTION).toMatch(/anyone who scans this code can run agents as you/);
   });
 });
