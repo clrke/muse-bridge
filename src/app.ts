@@ -317,7 +317,7 @@ export function createApp(deps: AppDeps): express.Express {
     const run = projectSlug ? newRun(projectSlug, 'ask') : null;
     run?.start();
     try {
-      const { response, parked } = await commandRouter.handle(payload, run?.onMessage, run?.onToolUse, run?.onFinalPrompt);
+      const { response, parked } = await commandRouter.handle(payload, run?.onMessage, run?.onToolUse, run?.onFinalPrompt, run?.onApproval);
       const elapsed = Date.now() - start;
       stats.requestsServed++;
       stats.totalMs += elapsed;
@@ -372,7 +372,7 @@ export function createApp(deps: AppDeps): express.Express {
         if (proj?.directory) r.emit({ type: 'meta', projectDirectory: proj.directory });
       }
 
-      const { response, projectSlug: handledSlug, parked } = await commandRouter.handle(payload, r.onMessage, r.onToolUse, r.onFinalPrompt);
+      const { response, projectSlug: handledSlug, parked } = await commandRouter.handle(payload, r.onMessage, r.onToolUse, r.onFinalPrompt, r.onApproval);
 
       let projectDirectory: string | null = null;
       if (handledSlug) {
@@ -531,7 +531,7 @@ export function createApp(deps: AppDeps): express.Express {
 
     const start = Date.now();
     try {
-      const { response, parked } = await commandRouter.handle(payload, run.onMessage, run.onToolUse, run.onFinalPrompt);
+      const { response, parked } = await commandRouter.handle(payload, run.onMessage, run.onToolUse, run.onFinalPrompt, run.onApproval);
       stats.requestsServed++;
       stats.totalMs += Date.now() - start;
       run.finish(response, { parked });

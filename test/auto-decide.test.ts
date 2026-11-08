@@ -122,6 +122,28 @@ describe('Auto-decide nudge', () => {
     expect(queryCalls).toHaveLength(1);
   });
 
+  it('forwards onApproval from handle through to session queries', async () => {
+    const seen: unknown[] = [];
+    sessionManager = {
+      query: vi.fn(async (slug: string, prompt: string, opts: { onApproval?: unknown }) => {
+        queryCalls.push(prompt);
+        seen.push(opts?.onApproval);
+        return makeWorkResult('Did real work', 0, 'continue');
+      }),
+      resetSession: vi.fn(),
+      loadSession: vi.fn(),
+      getSessionId: vi.fn().mockReturnValue('test-session'),
+    } as unknown as SessionManager;
+
+    const router = new CommandRouter(sessionManager, projectStore);
+    const onApproval = vi.fn();
+    await router.handle(makePayload('test'), undefined, undefined, undefined, onApproval);
+
+    expect(queryCalls.length).toBeGreaterThan(0);
+    expect(seen.length).toBe(queryCalls.length);
+    for (const cb of seen) expect(cb).toBe(onApproval);
+  });
+
   it('allows auto-decide when initial response used tools', async () => {
     sessionManager = mockSessionManager([
       makeWorkResult('Did real work', 0, 'continue'),

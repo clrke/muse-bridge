@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AskPayload, ProjectConfig, ProjectResponse } from './types.js';
+import type { MspApprovalSummary } from './msp-events.js';
 import type { SessionManager } from './session-manager.js';
 import { PROJECT_NOTES_DIR, type ProjectStore } from './project-store.js';
 import { calculateDeadline, ratingToHours, extendDeadline, pauseForVacation, deadlineFromActiveHours } from './deadline.js';
@@ -468,6 +469,7 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 type OnMessage = (text: string, meta?: { parentId: string }) => void;
 type OnToolUse = (name: string, detail: string, meta?: { id?: string; parentId?: string | null; done?: boolean; status?: string }) => void;
 type OnFinalPrompt = (text: string) => void;
+type OnApproval = (summary: MspApprovalSummary) => void;
 
 export interface HandleResult {
   response: string;
@@ -504,6 +506,7 @@ export class CommandRouter {
     onMessage?: OnMessage,
     onToolUse?: OnToolUse,
     onFinalPrompt?: OnFinalPrompt,
+    onApproval?: OnApproval,
   ): Promise<HandleResult> {
     const text = payload.trigger.originalMessage.trim();
     const { command, args } = this.parseCommand(text);
@@ -517,12 +520,12 @@ export class CommandRouter {
       case 'unvacation': return this.handleUnvacation();
       case 'auto-decide-extend': return this.handleAutoDecideExtend(args);
       case 'reset': return this.handleReset(args);
-      case 'nudge': return this.handleNudge(args, onMessage, onToolUse, onFinalPrompt);
+      case 'nudge': return this.handleNudge(args, onMessage, onToolUse, onFinalPrompt, onApproval);
       case 'help': return this.handleHelp();
       case '': return { response: 'Start a message with /<project> (e.g. `/my-app add a jump button`), or send /help.' };
       default: {
         const project = await this.projectStore.load(command);
-        if (project) return this.handleProject(project, args, onMessage, onToolUse, onFinalPrompt);
+        if (project) return this.handleProject(project, args, onMessage, onToolUse, onFinalPrompt, onApproval);
         return { response: `Unknown command: /${command}` };
       }
     }
@@ -708,13 +711,13 @@ export class CommandRouter {
     return { response: lines.join('\n') };
   }
 
-  private async handleNudge(args: string, onMessage?: OnMessage, onToolUse?: OnToolUse, onFinalPrompt?: OnFinalPrompt): Promise<HandleResult> {
+  private async handleNudge(args: string, onMessage?: OnMessage, onToolUse?: OnToolUse, onFinalPrompt?: OnFinalPrompt, onApproval?: OnApproval): Promise<HandleResult> {
     const slug = args.trim().toLowerCase();
     if (!slug) return { response: 'Usage: /nudge <project-slug>' };
     const project = await this.projectStore.load(slug);
     if (!project) return { response: `Project "${slug}" not found.` };
     console.log(`[CommandRouter] ${slug}: manual nudge`);
-    const response = await this.autoDecide(project, onMessage, onToolUse, onFinalPrompt);
+    const response = await this.autoDecide(project, onMessage, onToolUse, onFinalPrompt, onApproval);
     return { response, projectSlug: slug };
   }
 
@@ -724,6 +727,7 @@ export class CommandRouter {
     onMessage?: OnMessage,
     onToolUse?: OnToolUse,
     onFinalPrompt?: OnFinalPrompt,
+    onApproval?: OnApproval,
   ): Promise<HandleResult & { projectSlug: string }> {
     const slug = project.slug;
 
@@ -760,7 +764,7 @@ export class CommandRouter {
     this.exchangeRoundTrips.set(slug, 0);
     this.exchangeStartedAt.set(slug, new Date());
     try {
-      let { response } = await this.runTurn(project, cleanArgs, onMessage, onToolUse, onFinalPrompt);
+      let { response } = await this.runTurn(project, cleanArgs, onMessage, onToolUse, onFinalPrompt, onApproval);
 
       // Drain tasks parked while this run was in flight, released together in one turn.
       while ((this.deferredTasks.get(slug)?.length ?? 0) > 0) {
@@ -770,12 +774,12 @@ export class CommandRouter {
         const multi = batch.length > 1;
         const listNotice = batch.map(t => `> ${t.task.slice(0, 200)}`).join('\n');
         onMessage?.(`♻️ **Resuming ${batch.length} queued task${multi ? 's' : ''}:**\n${listNotice}`);
-        const extra = await this.runTurn(project, buildQueuedDrainPrompt(batch), onMessage, onToolUse, onFinalPrompt);
+        const extra = await this.runTurn(project, buildQueuedDrainPrompt(batch), onMessage, onToolUse, onFinalPrompt, onApproval);
         response += `\n\n${extra.response}`;
       }
 
       // Everything has settled. If getting here took more than one round-trip, close with a digest.
-      const wrapUp = await this.maybeWrapUpExchange(project, onMessage, onToolUse, onFinalPrompt);
+      const wrapUp = await this.maybeWrapUpExchange(project, onMessage, onToolUse, onFinalPrompt, onApproval);
       if (wrapUp) response += `\n\n${wrapUp}`;
 
       return { response, projectSlug: slug };
@@ -797,6 +801,7 @@ export class CommandRouter {
     onMessage?: OnMessage,
     onToolUse?: OnToolUse,
     onFinalPrompt?: OnFinalPrompt,
+    onApproval?: OnApproval,
   ): Promise<string | null> {
     const slug = project.slug;
     const roundTrips = this.exchangeRoundTrips.get(slug) ?? 0;
@@ -822,6 +827,7 @@ export class CommandRouter {
         systemPrompt: PROJECT_SYSTEM_PROMPT,
         onMessage,
         onToolUse,
+        onApproval,
       });
 
       const displayMessages = displayOf(result);
@@ -850,6 +856,7 @@ export class CommandRouter {
     onMessage?: OnMessage,
     onToolUse?: OnToolUse,
     onFinalPrompt?: OnFinalPrompt,
+    onApproval?: OnApproval,
   ): Promise<{ response: string; projectSlug: string }> {
     // Always tell the agent the current wall-clock time, plus how long it has been when
     // ≥1h has passed since the last conversation.
@@ -875,6 +882,7 @@ export class CommandRouter {
       ...(parsedEffort.effort ? { effort: parsedEffort.effort } : {}),
       onMessage,
       onToolUse,
+      onApproval,
     });
 
     project.lastConversationAt = new Date().toISOString();
@@ -896,6 +904,7 @@ export class CommandRouter {
         systemPrompt: PROJECT_SYSTEM_PROMPT,
         onMessage,
         onToolUse,
+        onApproval,
       });
       displayMessages.push(...displayOf(nudgeResult));
     }
@@ -905,7 +914,7 @@ export class CommandRouter {
     if (isStalled && nudgeResult) {
       decisionSource = nudgeResult.messages[nudgeResult.messages.length - 1] ?? nudgeResult.text;
     }
-    const decision = await this.enforceJsonEnvelope(project, decisionSource, displayMessages, onMessage, onToolUse, onFinalPrompt);
+    const decision = await this.enforceJsonEnvelope(project, decisionSource, displayMessages, onMessage, onToolUse, onFinalPrompt, onApproval);
 
     if (decision) {
       let { summary, rating } = decision;
@@ -931,7 +940,7 @@ export class CommandRouter {
       }
 
       // Question-shaped decisions: re-prompt for pros/cons. NO_CONS → auto-yes (rating 0).
-      ({ summary, rating } = await this.runProsCons(project, summary, rating, onMessage, onToolUse, onFinalPrompt));
+      ({ summary, rating } = await this.runProsCons(project, summary, rating, onMessage, onToolUse, onFinalPrompt, onApproval));
 
       const hours = ratingToHours(rating);
 
@@ -958,6 +967,7 @@ export class CommandRouter {
             systemPrompt: PROJECT_SYSTEM_PROMPT,
             onMessage,
             onToolUse,
+            onApproval,
           });
 
           project.status = `Operational with auto-decision on "${summary}" at ${formatTimestamp()}`;
@@ -971,6 +981,7 @@ export class CommandRouter {
             autoResult.messages[autoResult.messages.length - 1] ?? autoResult.text,
             displayMessages,
             onMessage, onToolUse, onFinalPrompt,
+            onApproval,
           );
 
           if (nextDecision) {
@@ -988,7 +999,7 @@ export class CommandRouter {
               nextDecision.rating = 0;
               nextDecision.summary = 'Yes, commit.';
             }
-            const updated = await this.runProsCons(project, nextDecision.summary, nextDecision.rating, onMessage, onToolUse, onFinalPrompt);
+            const updated = await this.runProsCons(project, nextDecision.summary, nextDecision.rating, onMessage, onToolUse, onFinalPrompt, onApproval);
             nextDecision.summary = updated.summary;
             nextDecision.rating = updated.rating;
           }
@@ -1071,13 +1082,14 @@ export class CommandRouter {
   }
 
   /** Answer the pending decision with "make an informed decision for me" (cron or /nudge). */
-  async autoDecide(project: ProjectConfig, onMessage?: OnMessage, onToolUse?: OnToolUse, onFinalPrompt?: OnFinalPrompt): Promise<string> {
+  async autoDecide(project: ProjectConfig, onMessage?: OnMessage, onToolUse?: OnToolUse, onFinalPrompt?: OnFinalPrompt, onApproval?: OnApproval): Promise<string> {
     onFinalPrompt?.(AUTO_DECIDE_PROMPT);
     const result = await this.queryCounted(project.slug, AUTO_DECIDE_PROMPT, {
       cwd: project.directory,
       systemPrompt: PROJECT_SYSTEM_PROMPT,
       onMessage,
       onToolUse,
+      onApproval,
     });
 
     const responseText = stripJson(result.text);
@@ -1103,6 +1115,7 @@ export class CommandRouter {
     onMessage?: OnMessage,
     onToolUse?: OnToolUse,
     onFinalPrompt?: OnFinalPrompt,
+    onApproval?: OnApproval,
   ): Promise<{ summary: string; rating: number }> {
     if (!summary.includes('?')) return { summary, rating };
     if (ratingToHours(rating) === 0) return { summary, rating };
@@ -1126,6 +1139,7 @@ export class CommandRouter {
       systemPrompt: PROJECT_SYSTEM_PROMPT,
       onMessage,
       onToolUse,
+      onApproval,
     });
     const prosConsText = stripJson(prosCons.text) || prosCons.text;
     if (/^\s*NO_CONS\s*$/m.test(prosConsText)) {
@@ -1140,6 +1154,7 @@ export class CommandRouter {
       systemPrompt: PROJECT_SYSTEM_PROMPT,
       onMessage,
       onToolUse,
+      onApproval,
     });
     // The suggestion usually ends with a refined decision: prefer it over the stale question.
     const suggestedDecision = extractDecision(suggestion.text);
@@ -1162,6 +1177,7 @@ export class CommandRouter {
     onMessage?: OnMessage,
     onToolUse?: OnToolUse,
     onFinalPrompt?: OnFinalPrompt,
+    onApproval?: OnApproval,
   ): Promise<{ summary: string; rating: number; recovered?: boolean } | null> {
     const decision = extractDecision(decisionSource);
     if (decision || isJsonEnvelopeExempt(decisionSource)) return decision;
@@ -1173,6 +1189,7 @@ export class CommandRouter {
       systemPrompt: PROJECT_SYSTEM_PROMPT,
       onMessage,
       onToolUse,
+      onApproval,
     });
     displayMessages.push(...displayOf(retry));
 

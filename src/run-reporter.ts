@@ -1,5 +1,6 @@
 import { formatForChat, parseJsonResponse, stripJsonParts } from './command-router.js';
 import type { Feed } from './feed.js';
+import type { MspApprovalSummary } from './msp-events.js';
 import type { JournalEvent, RunJournal } from './run-journal.js';
 import type { MessageMeta, ToolUseMeta } from './session-manager.js';
 import { toSpeech } from './speech.js';
@@ -29,8 +30,8 @@ export function replyDecision(raw: string | null | undefined): { decision: strin
 }
 
 /**
- * One run's event fan-out. The router's `onMessage` / `onToolUse` / `onFinalPrompt` callbacks
- * go in; out come `/ask/stream`-shaped events for `sink` (JSON envelopes stripped, deduped per
+ * One run's event fan-out. The router's `onMessage` / `onToolUse` / `onApproval` /
+ * `onFinalPrompt` callbacks go in; out come `/ask/stream`-shaped events for `sink` (JSON envelopes stripped, deduped per
  * speaker, with `speech`) and the contract subset for the global feed, tagged with slug and
  * runId. After `finish()` / `fail()` later callbacks (a timed-out turn still running) are dropped.
  */
@@ -106,6 +107,17 @@ export class RunReporter {
     this.emit({ type: 'final_prompt', text });
   };
 
+  /** Serve driver only: one resolved approval (who ran what, who allowed it). */
+  readonly onApproval = (summary: MspApprovalSummary): void => {
+    if (this.ended) return;
+    const ev = {
+      tool: summary.tool, subject: summary.subject, decision: summary.decision,
+      resolvedBy: summary.resolvedBy, policyResult: summary.policyResult, line: summary.line,
+    };
+    this.opts.sink?.({ type: 'approval', ...ev });
+    this.feedAppend('approval', ev);
+  };
+
   /** The run finished: `done` (sink: plus singleShot/projectDirectory/parked). */
   finish(response: string, extra: FinishExtra = {}): void {
     if (this.ended) return;
@@ -138,7 +150,7 @@ export class RunReporter {
     }
   }
 
-  private feedAppend(type: 'message' | 'tool' | 'agent_done', payload: Record<string, unknown>): void {
+  private feedAppend(type: 'message' | 'tool' | 'agent_done' | 'approval', payload: Record<string, unknown>): void {
     if (this.fed) this.fed.feed.append(this.fed.slug, this.runId, type, payload);
   }
 }

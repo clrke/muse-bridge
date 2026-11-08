@@ -10,7 +10,7 @@
  * `seq` restarts at 1 when the bridge restarts. A cursor greater than the current `seq` is
  * therefore from an earlier bridge process, and `since()` replays the whole buffer for it.
  */
-export type FeedEventType = 'run' | 'message' | 'tool' | 'agent_done' | 'done' | 'error' | 'aborted' | 'agent_state'
+export type FeedEventType = 'run' | 'message' | 'tool' | 'agent_done' | 'approval' | 'done' | 'error' | 'aborted' | 'agent_state'
   | BridgeEventType;
 
 /** Bridge-wide events, not tied to one agent's run: `slug` and `runId` are null. */
